@@ -1,0 +1,3 @@
+[submodule "references/adk-samples"]
+	path = references/adk-samples
+	url = https://github.com/google/adk-samples.git
