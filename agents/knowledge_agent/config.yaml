@@ -1,0 +1,5 @@
+agent_name: knowledge_agent
+model: gemini-2.0-flash
+temperature: 0.2
+max_output_tokens: 2048
+description: Answers questions grounded in a client knowledge base

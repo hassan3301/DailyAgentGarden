@@ -1,0 +1,5 @@
+agent_name: orchestrator
+model: gemini-2.0-flash
+temperature: 0.1
+max_output_tokens: 1024
+description: Routes queries to the appropriate specialist agent

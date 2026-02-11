@@ -1,0 +1,5 @@
+agent_name: research_agent
+model: gemini-2.0-flash
+temperature: 0.3
+max_output_tokens: 2048
+description: Searches and synthesizes information from multiple sources
