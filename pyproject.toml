@@ -9,11 +9,14 @@ description = "Reusable multi-agent framework for client projects using Google V
 requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = [
+    "google-adk>=1.10.0",
+    "google-genai>=1.9.0",
     "google-cloud-aiplatform>=1.60.0",
     "vertexai>=1.60.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.9.0",
+    "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
 ]
 

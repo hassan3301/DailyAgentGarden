@@ -1,10 +1,180 @@
 # Google ADK Patterns
 
-Code patterns for working with Google Vertex AI in DailyAgentGarden.
+Code patterns for working with Google ADK and Vertex AI in DailyAgentGarden.
 
-## Agent Initialization
+## ADK Agent Definition
 
-Initialize the Vertex AI SDK once at startup:
+Define agents using `google.adk.agents.Agent`:
+
+```python
+from google.adk.agents import Agent
+
+my_agent = Agent(
+    model="gemini-2.0-flash",
+    name="my_agent",
+    description="Brief description for AgentTool routing",
+    instruction="System prompt with workflow and guidelines",
+    output_key="my_output",
+    tools=[...],
+)
+```
+
+### Agent vs LlmAgent
+
+- **`Agent`**: Standard agent with tools. Use for specialist agents (knowledge, drafting, research).
+- **`LlmAgent`**: Equivalent to `Agent` (they are aliases in ADK). Use for the orchestrator to make the intent clear.
+
+## AgentTool for Sub-Agent Composition
+
+Wrap sub-agents as tools for the orchestrator:
+
+```python
+from google.adk.agents import LlmAgent
+from google.adk.tools.agent_tool import AgentTool
+
+from agents.knowledge_agent.agent import knowledge_agent
+from agents.drafting_agent.agent import drafting_agent
+
+orchestrator = LlmAgent(
+    name="orchestrator",
+    model="gemini-2.0-flash",
+    instruction=ORCHESTRATOR_INSTRUCTION,
+    tools=[
+        AgentTool(agent=knowledge_agent),
+        AgentTool(agent=drafting_agent),
+    ],
+)
+```
+
+`AgentTool` uses the sub-agent's `name` and `description` to help the orchestrator's LLM decide when to invoke each sub-agent.
+
+## output_key for Structured State
+
+Use `output_key` to store agent output in the session state:
+
+```python
+knowledge_agent = Agent(
+    model="gemini-2.0-flash",
+    name="knowledge_agent",
+    output_key="knowledge_results",  # Stored in session state
+    ...
+)
+```
+
+When the orchestrator invokes this agent via `AgentTool`, the output is stored under `knowledge_results` in the session state and can be referenced by subsequent agent invocations.
+
+## VertexAiRagRetrieval Tool
+
+Use ADK's built-in RAG retrieval tool:
+
+```python
+import os
+from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
+from vertexai.preview import rag
+
+search_tool = VertexAiRagRetrieval(
+    name="search_firm_knowledge_base",
+    description="Search the firm's knowledge base for relevant documents.",
+    rag_resources=[
+        rag.RagResource(
+            rag_corpus=os.environ.get("KNOWLEDGE_RAG_CORPUS", ""),
+        )
+    ],
+    similarity_top_k=10,
+    vector_distance_threshold=0.6,
+)
+```
+
+### Configuration
+
+| Parameter | Description |
+|---|---|
+| `name` | Tool name referenced in the agent's prompt |
+| `description` | Helps the LLM decide when to use this tool |
+| `rag_resources` | List of `RagResource` with corpus resource names |
+| `similarity_top_k` | Number of top results to retrieve |
+| `vector_distance_threshold` | Minimum similarity score (0.0–1.0) |
+
+## google_search Tool
+
+Use ADK's built-in Google Search tool:
+
+```python
+from google.adk.tools import google_search
+
+research_agent = Agent(
+    model="gemini-2.0-flash",
+    name="research_agent",
+    tools=[google_search, search_rag_tool],
+)
+```
+
+## InMemoryRunner for Testing
+
+Use `InMemoryRunner` for programmatic agent execution:
+
+```python
+from google.adk.runners import InMemoryRunner
+from google.genai import types
+
+from agents import root_agent
+
+runner = InMemoryRunner(agent=root_agent, app_name="legal_assistant")
+
+# Create a session
+session = await runner.session_service.create_session(
+    app_name="legal_assistant",
+    user_id="test-user",
+)
+
+# Send a message
+content = types.Content(
+    role="user",
+    parts=[types.Part.from_text("Research non-compete enforceability in California")],
+)
+
+async for event in runner.run_async(
+    user_id="test-user",
+    session_id=session.id,
+    new_message=content,
+):
+    if event.content and event.content.parts:
+        print(event.content.parts[0].text)
+```
+
+## Environment Setup
+
+### Required Environment Variables
+
+```bash
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_GENAI_USE_VERTEXAI=TRUE
+
+# RAG corpus resource names
+KNOWLEDGE_RAG_CORPUS=projects/{project}/locations/{location}/ragCorpora/{id}
+DRAFTING_RAG_CORPUS=projects/{project}/locations/{location}/ragCorpora/{id}
+RESEARCH_RAG_CORPUS=projects/{project}/locations/{location}/ragCorpora/{id}
+```
+
+### Package __init__.py Pattern
+
+Each agent package loads env and sets the Vertex AI backend:
+
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "TRUE")
+
+from .agent import my_agent  # noqa: E402
+__all__ = ["my_agent"]
+```
+
+## Agent Initialization (Legacy)
+
+For direct Vertex AI SDK usage outside of ADK agents:
 
 ```python
 import vertexai
@@ -25,225 +195,6 @@ def init_vertex_ai() -> None:
     )
 ```
 
-Call this during application startup (e.g., in a FastAPI lifespan handler):
-
-```python
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_vertex_ai()
-    yield
-
-
-app = FastAPI(lifespan=lifespan)
-```
-
-## Generative Model Usage
-
-### Basic Generation
-
-```python
-from vertexai.generative_models import GenerativeModel, GenerationConfig
-
-model = GenerativeModel(
-    model_name="gemini-2.0-flash",
-    generation_config=GenerationConfig(
-        temperature=0.3,
-        max_output_tokens=2048,
-        top_k=40,
-        top_p=0.95,
-    ),
-    system_instruction="You are a helpful research assistant.",
-)
-
-response = model.generate_content("Summarize the key findings.")
-print(response.text)
-```
-
-### Async Generation
-
-```python
-response = await model.generate_content_async("Summarize the key findings.")
-```
-
-## RAG Grounding Configuration
-
-### Using Vertex AI Search as a Grounding Source
-
-```python
-from vertexai.generative_models import GenerativeModel, Tool
-from vertexai.preview.generative_models import grounding
-
-# Create a grounding tool backed by a Vertex AI Search datastore
-grounding_tool = Tool.from_retrieval(
-    retrieval=grounding.Retrieval(
-        source=grounding.VertexAISearch(
-            datastore=f"projects/{PROJECT_ID}/locations/global"
-                      f"/collections/default_collection"
-                      f"/dataStores/{DATASTORE_ID}",
-        ),
-    )
-)
-
-model = GenerativeModel(
-    model_name="gemini-2.0-flash",
-    tools=[grounding_tool],
-)
-
-response = model.generate_content("What is our refund policy?")
-```
-
-### Per-Agent RAG Configuration
-
-Each agent defines its RAG sources in `rag_config.py`:
-
-```python
-from dataclasses import dataclass
-
-
-@dataclass
-class RAGConfig:
-    datastore_id: str
-    collection: str = "default_collection"
-    similarity_top_k: int = 10
-    vector_distance_threshold: float = 0.7
-
-
-# Agent-specific configuration
-DEFAULT_CONFIG = RAGConfig(
-    datastore_id="knowledge-base-v2",
-    similarity_top_k=5,
-)
-```
-
-## Tool Definition Patterns (Function Calling)
-
-### Declaring Tools
-
-Define tools as Python functions with type annotations. Vertex AI infers the schema:
-
-```python
-from vertexai.generative_models import FunctionDeclaration, Tool
-
-search_func = FunctionDeclaration(
-    name="search_documents",
-    description="Search internal documents for relevant information.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "The search query.",
-            },
-            "max_results": {
-                "type": "integer",
-                "description": "Maximum number of results to return.",
-            },
-        },
-        "required": ["query"],
-    },
-)
-
-create_draft_func = FunctionDeclaration(
-    name="create_draft",
-    description="Create a draft document with the given content.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "title": {
-                "type": "string",
-                "description": "Document title.",
-            },
-            "body": {
-                "type": "string",
-                "description": "Document body content.",
-            },
-            "format": {
-                "type": "string",
-                "enum": ["markdown", "plain", "html"],
-                "description": "Output format.",
-            },
-        },
-        "required": ["title", "body"],
-    },
-)
-
-tools = Tool(function_declarations=[search_func, create_draft_func])
-```
-
-### Handling Function Calls
-
-```python
-from vertexai.generative_models import GenerativeModel, Part
-
-model = GenerativeModel(
-    model_name="gemini-2.0-flash",
-    tools=[tools],
-)
-
-response = model.generate_content("Find documents about Q4 revenue.")
-
-# Check if the model wants to call a function
-for candidate in response.candidates:
-    for part in candidate.content.parts:
-        if fn := part.function_call:
-            name = fn.name
-            args = dict(fn.args)
-
-            # Execute the function
-            result = execute_tool(name, args)
-
-            # Send the result back to the model
-            follow_up = model.generate_content(
-                [
-                    Part.from_text("Find documents about Q4 revenue."),
-                    response.candidates[0].content,
-                    Part.from_function_response(
-                        name=name,
-                        response={"result": result},
-                    ),
-                ]
-            )
-```
-
-### Mapping BaseAgent Tools to Vertex AI
-
-Convert `ToolDefinition` objects from `get_tools()` into Vertex AI declarations:
-
-```python
-from shared.base_agent import ToolDefinition
-from vertexai.generative_models import FunctionDeclaration, Tool
-
-
-def to_vertex_tools(definitions: list[ToolDefinition]) -> Tool:
-    """Convert BaseAgent tool definitions to a Vertex AI Tool."""
-    declarations = [
-        FunctionDeclaration(
-            name=td.name,
-            description=td.description,
-            parameters=td.parameters,
-        )
-        for td in definitions
-    ]
-    return Tool(function_declarations=declarations)
-```
-
-## Chat Sessions (Multi-Turn)
-
-```python
-model = GenerativeModel(model_name="gemini-2.0-flash")
-chat = model.start_chat()
-
-response1 = chat.send_message("What are the key metrics for Q4?")
-print(response1.text)
-
-response2 = chat.send_message("Compare those with Q3.")
-print(response2.text)
-```
-
 ## Error Handling
 
 ```python
@@ -261,4 +212,16 @@ from google.api_core import exceptions, retry
 async def generate_with_retry(model, prompt: str) -> str:
     response = await model.generate_content_async(prompt)
     return response.text
+```
+
+## Running with ADK CLI
+
+```bash
+# Web UI
+adk web agents
+
+# CLI mode
+adk run agents
+
+# The entry point is agents/__init__.py which exports root_agent
 ```

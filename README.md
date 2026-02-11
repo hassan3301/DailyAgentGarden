@@ -11,9 +11,9 @@ DailyAgentGarden provides a modular foundation for deploying specialized AI agen
 | Agent | Purpose |
 |---|---|
 | **Orchestrator** | Routes queries to the appropriate specialist agent |
-| **Drafting Agent** | Generates and refines written content |
-| **Research Agent** | Searches and synthesizes information from multiple sources |
-| **Knowledge Agent** | Answers questions grounded in a client's knowledge base |
+| **Drafting Agent** | Generates and refines legal documents using template RAG |
+| **Research Agent** | Conducts legal research via web search and internal corpus |
+| **Knowledge Agent** | Searches the firm's internal knowledge base for precedents and clauses |
 
 ## Quick Start
 
@@ -30,13 +30,42 @@ pip install -e ".[dev]"
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your GCP project details
+# Edit .env with your GCP project details and RAG corpus IDs
 
-# Run tests
+# Run structural tests
 pytest
 
-# Start the API server
-uvicorn shared.api:app --reload
+# Run with ADK web UI (requires GCP credentials)
+adk web agents
+
+# Run with ADK CLI
+adk run agents
+```
+
+## Architecture
+
+The system uses Google ADK's native `Agent` / `LlmAgent` classes with `AgentTool` for sub-agent composition:
+
+```
+User Query
+    │
+    ▼
+┌──────────────────────────────────┐
+│  Orchestrator (LlmAgent)         │
+│  - Prompt-driven intent routing  │
+│  - Multi-agent invocation        │
+│  tools=[                         │
+│    AgentTool(knowledge_agent),   │
+│    AgentTool(drafting_agent),    │
+│    AgentTool(research_agent),    │
+│  ]                               │
+└──┬──────────┬──────────┬─────────┘
+   │          │          │
+   ▼          ▼          ▼
+Knowledge   Drafting   Research
+Agent       Agent      Agent
+(Agent)     (Agent)    (Agent)
+RAG tool    RAG tool   google_search + RAG tool
 ```
 
 ## Creating a New Agent
@@ -45,34 +74,54 @@ uvicorn shared.api:app --reload
 
 ```
 agents/my_agent/
-├── __init__.py
-├── config.yaml      # Agent-specific settings
-├── handler.py       # Agent implementation (extends BaseAgent)
-├── prompts.py       # Prompt templates
-├── rag_config.py    # RAG grounding configuration
+├── __init__.py      # Env setup + exports agent instance
+├── agent.py         # ADK Agent definition with tools
+├── prompt.py        # Instruction prompt
+├── config.yaml      # Agent metadata
 └── tests/
-    └── test_handler.py
+    └── test_agent.py
 ```
 
-2. Implement the agent by subclassing `BaseAgent`:
+2. Define the agent using Google ADK:
 
 ```python
-from shared.base_agent import AgentContext, AgentResponse, BaseAgent, ToolDefinition
+# agents/my_agent/agent.py
+from google.adk.agents import Agent
+from .prompt import MY_AGENT_INSTRUCTION
 
-
-class MyAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(agent_name="my_agent")
-
-    async def process_query(self, query: str, context: AgentContext) -> AgentResponse:
-        # Your agent logic here
-        return AgentResponse(content="response")
-
-    def get_tools(self) -> list[ToolDefinition]:
-        return []
+my_agent = Agent(
+    model="gemini-2.0-flash",
+    name="my_agent",
+    description="What this agent does",
+    instruction=MY_AGENT_INSTRUCTION,
+    output_key="my_output",
+    tools=[...],
+)
 ```
 
-3. Register the agent in the orchestrator's routing config.
+3. Export from `__init__.py`:
+
+```python
+# agents/my_agent/__init__.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "TRUE")
+
+from .agent import my_agent
+__all__ = ["my_agent"]
+```
+
+4. Wire it into the orchestrator via `AgentTool`:
+
+```python
+from google.adk.tools.agent_tool import AgentTool
+from agents.my_agent.agent import my_agent
+
+# Add to orchestrator tools list
+AgentTool(agent=my_agent)
+```
 
 See [docs/agent_patterns.md](docs/agent_patterns.md) for full conventions.
 
@@ -95,6 +144,6 @@ gcloud run deploy daily-agent-garden \
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — system design and principles
+- [Architecture](docs/architecture.md) — system design and ADK agent composition
 - [Agent Patterns](docs/agent_patterns.md) — folder structure and conventions
-- [Google ADK Patterns](docs/google_adk_patterns.md) — Vertex AI code examples
+- [Google ADK Patterns](docs/google_adk_patterns.md) — ADK Agent, AgentTool, and InMemoryRunner patterns

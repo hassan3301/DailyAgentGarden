@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(powershell.exe -Command \"gh --version\")",
+      "Bash(git submodule add:*)",
+      "Bash(git reset:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}

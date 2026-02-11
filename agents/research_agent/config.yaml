@@ -2,4 +2,9 @@ agent_name: research_agent
 model: gemini-2.0-flash
 temperature: 0.3
 max_output_tokens: 2048
-description: Searches and synthesizes information from multiple sources
+description: Conducts legal research using web search and the firm's internal research corpus
+type: adk_agent
+tools:
+  - google_search
+  - search_research_corpus (VertexAiRagRetrieval)
+output_key: research_results

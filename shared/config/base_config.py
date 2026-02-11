@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     environment: str = Field(default="development", alias="ENVIRONMENT")
 
+    # RAG corpus resource names for each agent
+    knowledge_rag_corpus: str = Field(
+        default="", alias="KNOWLEDGE_RAG_CORPUS"
+    )
+    drafting_rag_corpus: str = Field(
+        default="", alias="DRAFTING_RAG_CORPUS"
+    )
+    research_rag_corpus: str = Field(
+        default="", alias="RESEARCH_RAG_CORPUS"
+    )
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

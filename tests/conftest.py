@@ -62,3 +62,24 @@ def _reset_settings_cache() -> None:
     from shared.config.base_config import get_settings
 
     get_settings.cache_clear()
+
+
+@pytest.fixture
+def adk_env(monkeypatch) -> None:
+    """Set all environment variables required by ADK agents."""
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "TRUE")
+    monkeypatch.setenv("VERTEX_AI_MODEL", "gemini-2.0-flash")
+    monkeypatch.setenv(
+        "KNOWLEDGE_RAG_CORPUS",
+        "projects/test-project/locations/us-central1/ragCorpora/knowledge",
+    )
+    monkeypatch.setenv(
+        "DRAFTING_RAG_CORPUS",
+        "projects/test-project/locations/us-central1/ragCorpora/drafting",
+    )
+    monkeypatch.setenv(
+        "RESEARCH_RAG_CORPUS",
+        "projects/test-project/locations/us-central1/ragCorpora/research",
+    )

@@ -2,4 +2,8 @@ agent_name: drafting_agent
 model: gemini-2.0-flash
 temperature: 0.7
 max_output_tokens: 4096
-description: Generates and refines written content
+description: Generates, refines, and reviews legal documents using the firm's template library
+type: adk_agent
+tools:
+  - search_drafting_templates (VertexAiRagRetrieval)
+output_key: draft_document
