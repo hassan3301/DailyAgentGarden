@@ -3,28 +3,20 @@
 import os
 
 from google.adk.agents import Agent
-from google.adk.tools.retrieval.vertex_ai_rag_retrieval import (
-    VertexAiRagRetrieval,
-)
-from vertexai.preview import rag
+
+from baseLawAgent.shared_libraries.rag_tools import create_rag_retrieval_tool
 
 from .prompt import KNOWLEDGE_AGENT_INSTRUCTION
 
-MODEL = "gemini-2.0-flash"
+MODEL = os.environ.get("VERTEX_AI_MODEL", "gemini-2.0-flash")
 
-search_firm_knowledge_base = VertexAiRagRetrieval(
+search_firm_knowledge_base = create_rag_retrieval_tool(
     name="search_firm_knowledge_base",
     description=(
         "Search the firm's internal knowledge base for past work product, "
         "legal precedents, clause libraries, templates, and internal memoranda."
     ),
-    rag_resources=[
-        rag.RagResource(
-            rag_corpus=os.environ.get("KNOWLEDGE_RAG_CORPUS", ""),
-        )
-    ],
-    similarity_top_k=10,
-    vector_distance_threshold=0.6,
+    corpus_env_var="KNOWLEDGE_RAG_CORPUS",
 )
 
 knowledge_agent = Agent(

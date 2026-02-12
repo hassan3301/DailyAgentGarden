@@ -22,12 +22,12 @@ class TestAgentWiring:
     """Verify that all agents can be imported and are wired correctly."""
 
     def test_root_agent_importable(self):
-        from agents import root_agent
+        from agents.baseLawAgent import root_agent
 
         assert root_agent.name == "orchestrator"
 
     def test_orchestrator_has_all_sub_agents(self):
-        from agents import root_agent
+        from agents.baseLawAgent import root_agent
 
         agent_names = [t.agent.name for t in root_agent.tools]
         assert set(agent_names) == {"knowledge_agent", "drafting_agent", "research_agent"}
@@ -61,7 +61,7 @@ class TestInMemoryRunner:
         """Verify the InMemoryRunner can instantiate with our root agent."""
         from google.adk.runners import InMemoryRunner
 
-        from agents import root_agent
+        from agents.baseLawAgent import root_agent
 
         runner = InMemoryRunner(agent=root_agent, app_name="test_legal_assistant")
         assert runner is not None

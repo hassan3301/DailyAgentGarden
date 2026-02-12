@@ -4,28 +4,20 @@ import os
 
 from google.adk.agents import Agent
 from google.adk.tools import google_search
-from google.adk.tools.retrieval.vertex_ai_rag_retrieval import (
-    VertexAiRagRetrieval,
-)
-from vertexai.preview import rag
+
+from baseLawAgent.shared_libraries.rag_tools import create_rag_retrieval_tool
 
 from .prompt import RESEARCH_AGENT_INSTRUCTION
 
-MODEL = "gemini-2.0-flash"
+MODEL = os.environ.get("VERTEX_AI_MODEL", "gemini-2.0-flash")
 
-search_research_corpus = VertexAiRagRetrieval(
+search_research_corpus = create_rag_retrieval_tool(
     name="search_research_corpus",
     description=(
         "Search the firm's internal research corpus for prior research memos, "
         "case analyses, legal briefs, and compiled legal research."
     ),
-    rag_resources=[
-        rag.RagResource(
-            rag_corpus=os.environ.get("RESEARCH_RAG_CORPUS", ""),
-        )
-    ],
-    similarity_top_k=10,
-    vector_distance_threshold=0.6,
+    corpus_env_var="RESEARCH_RAG_CORPUS",
 )
 
 research_agent = Agent(

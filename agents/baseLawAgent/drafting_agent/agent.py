@@ -3,28 +3,20 @@
 import os
 
 from google.adk.agents import Agent
-from google.adk.tools.retrieval.vertex_ai_rag_retrieval import (
-    VertexAiRagRetrieval,
-)
-from vertexai.preview import rag
+
+from baseLawAgent.shared_libraries.rag_tools import create_rag_retrieval_tool
 
 from .prompt import DRAFTING_AGENT_INSTRUCTION
 
-MODEL = "gemini-2.0-flash"
+MODEL = os.environ.get("VERTEX_AI_MODEL", "gemini-2.0-flash")
 
-search_drafting_templates = VertexAiRagRetrieval(
+search_drafting_templates = create_rag_retrieval_tool(
     name="search_drafting_templates",
     description=(
         "Search the firm's drafting template library for standard clauses, "
         "contract templates, document formats, and prior drafting examples."
     ),
-    rag_resources=[
-        rag.RagResource(
-            rag_corpus=os.environ.get("DRAFTING_RAG_CORPUS", ""),
-        )
-    ],
-    similarity_top_k=10,
-    vector_distance_threshold=0.6,
+    corpus_env_var="DRAFTING_RAG_CORPUS",
 )
 
 drafting_agent = Agent(
