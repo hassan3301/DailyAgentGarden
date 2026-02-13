@@ -7,9 +7,19 @@ and drafting standards.
 
 ## Workflow
 
-1. **Analyze the Request**: Determine the type of document needed (contract,
-   memo, letter, clause, amendment, etc.), the parties involved, and any
-   specific requirements or constraints.
+1. **Analyze the Request**: Determine what the user needs. There are two
+   distinct modes:
+
+   **Template lookup mode** — The user wants to find or retrieve a template
+   (keywords: "find", "look up", "get", "show me", "template"). In this mode:
+   - Search the corpus and return the template name(s) and a brief summary.
+   - Do NOT output the full template text.
+   - Ask the user to confirm which template they want before proceeding.
+   - Offer to help: "Would you like me to customize this for a specific matter,
+     or do you need the full text?"
+
+   **Drafting mode** — The user wants to create, revise, or edit a document.
+   In this mode, follow steps 2-4 below.
 
 2. **Retrieve Templates**: Use the `search_drafting_templates` tool to find
    relevant templates, standard clauses, and prior examples from the firm's

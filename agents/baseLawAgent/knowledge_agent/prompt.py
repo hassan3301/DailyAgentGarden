@@ -36,6 +36,6 @@ Include citations at the end of every substantive answer:
 - Preserve the exact language of clauses and legal terms — do not paraphrase
   legal language unless asked to explain it.
 - Flag any retrieved content that may be outdated with a note:
-  "[Note: This document is from {date} — verify it reflects current policy.]"
+  "[Note: This document is from <date> — verify it reflects current policy.]"
 - Never fabricate citations or document references.
 """
