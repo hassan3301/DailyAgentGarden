@@ -5,7 +5,7 @@ These tools calculate weekly/daily KPIs that managers need to report
 
 import traceback
 from google.adk.tools import ToolContext
-from typing import Optional, List
+from typing import Optional
 
 from .veloce_tools import (
     get_cached_employee_detail_data,
@@ -213,33 +213,37 @@ def calculate_daily_average_meal_value(
         }
 
 
-def calculate_server_upselling_metrics(
+def get_server_sales_by_category(
     tool_context: ToolContext,
     from_date: str,
-    to_date: str,
-    main_meal_categories: Optional[List[str]] = None
+    to_date: str
 ) -> dict:
     """
-    Calculate upselling performance for each server.
-    Upsells = Everything EXCEPT main meal categories (BREAKFAST, LUNCH)
-    """
-    print(f"--- calculate_server_upselling_metrics: {from_date} to {to_date} ---")
+    Get detailed sales breakdown by category for each server.
+    Returns per-employee totals and a category breakdown (by bigDivision),
+    so the agent can calculate upsells, main meal ratios, etc.
 
-    if main_meal_categories is None:
-        main_meal_categories = ["BREAKFAST", "LUNCH"]
+    Args:
+        tool_context: ADK context with auth token and location ID
+        from_date: Start date in ISO format (YYYY-MM-DD)
+        to_date: End date in ISO format (YYYY-MM-DD)
+
+    Returns:
+        Dictionary with per-employee sales broken down by category
+    """
+    print(f"--- get_server_sales_by_category: {from_date} to {to_date} ---")
 
     try:
-        # Use shared data layer (cached if already fetched by LTO report)
         data = get_cached_employee_detail_data(tool_context, from_date, to_date)
         employee_totals = data["employee_totals"]
         employee_map = data["employee_map"]
         detail_data = data["detail_data"]
         active_employee_ids = data["active_employee_ids"]
 
-        # Process by employee
+        # Track per-employee: item counts and sales by category
         employee_item_counts = {emp_id: 0 for emp_id in active_employee_ids}
-        employee_upsell_sales = {emp_id: 0 for emp_id in active_employee_ids}
-        employee_main_meal_sales = {emp_id: 0 for emp_id in active_employee_ids}
+        employee_category_sales = {emp_id: {} for emp_id in active_employee_ids}
+        employee_category_qty = {emp_id: {} for emp_id in active_employee_ids}
 
         for sale in detail_data:
             emp_id = sale.get("employeeId")
@@ -250,18 +254,14 @@ def calculate_server_upselling_metrics(
             sales_amount = sale.get("salesAmount", 0)
             employee_item_counts[emp_id] += quantity
 
-            division_name = sale.get("division", {}).get("name", "")
-            big_division_name = sale.get("bigDivision", {}).get("name", "")
+            category = sale.get("bigDivision", {}).get("name", "OTHER")
 
-            is_main_meal = any(
-                cat.upper() in big_division_name.upper() or cat.upper() in division_name.upper()
-                for cat in main_meal_categories
+            employee_category_sales[emp_id][category] = (
+                employee_category_sales[emp_id].get(category, 0) + sales_amount
             )
-
-            if is_main_meal:
-                employee_main_meal_sales[emp_id] += sales_amount
-            else:
-                employee_upsell_sales[emp_id] += sales_amount
+            employee_category_qty[emp_id][category] = (
+                employee_category_qty[emp_id].get(category, 0) + quantity
+            )
 
         # Compile results
         results = []
@@ -271,36 +271,44 @@ def calculate_server_upselling_metrics(
             sales_amount = totals["sales_amount"]
             emp_name = employee_map.get(emp_id, "Unknown")
             item_count = employee_item_counts[emp_id]
-            upsell_amount = employee_upsell_sales[emp_id]
-            main_meal_amount = employee_main_meal_sales[emp_id]
 
-            avg_items_per_invoice = item_count / sales_count if sales_count > 0 else 0
-            upsell_percentage = (upsell_amount / sales_amount * 100) if sales_amount > 0 else 0
-            main_meal_percentage = (main_meal_amount / sales_amount * 100) if sales_amount > 0 else 0
-            avg_sale_value = sales_amount / sales_count if sales_count > 0 else 0
+            avg_items = item_count / sales_count if sales_count > 0 else 0
+            avg_sale = sales_amount / sales_count if sales_count > 0 else 0
+
+            # Build category breakdown
+            category_breakdown = []
+            for cat_name, cat_sales in sorted(
+                employee_category_sales[emp_id].items(),
+                key=lambda x: x[1],
+                reverse=True
+            ):
+                pct = (cat_sales / sales_amount * 100) if sales_amount > 0 else 0
+                category_breakdown.append({
+                    "category": cat_name,
+                    "sales_amount": format_currency(cat_sales),
+                    "sales_amount_raw": round(cat_sales, 2),
+                    "quantity": employee_category_qty[emp_id].get(cat_name, 0),
+                    "percentage": round(pct, 2)
+                })
 
             results.append({
                 "employee_name": emp_name,
                 "employee_id": emp_id,
                 "total_sales": format_currency(sales_amount),
+                "total_sales_raw": round(sales_amount, 2),
                 "invoice_count": sales_count,
                 "total_items_sold": item_count,
-                "average_items_per_invoice": round(avg_items_per_invoice, 2),
-                "average_sale_value": format_currency(avg_sale_value),
-                "main_meal_sales": format_currency(main_meal_amount),
-                "main_meal_percentage": round(main_meal_percentage, 2),
-                "upsell_sales": format_currency(upsell_amount),
-                "upsell_percentage": round(upsell_percentage, 2)
+                "average_items_per_invoice": round(avg_items, 2),
+                "average_sale_value": format_currency(avg_sale),
+                "category_breakdown": category_breakdown
             })
 
-        results.sort(key=lambda x: x["upsell_percentage"], reverse=True)
+        results.sort(key=lambda x: x["total_sales_raw"], reverse=True)
 
         return {
             "status": "success",
             "period": f"{from_date} to {to_date}",
             "employee_count": len(results),
-            "main_meal_categories": main_meal_categories,
-            "calculation_method": "Upsells = Total Sales - BREAKFAST - LUNCH",
             "employees": results
         }
 
@@ -309,5 +317,5 @@ def calculate_server_upselling_metrics(
         return {
             "status": "error",
             "error": str(e),
-            "message": f"Failed to calculate upselling metrics: {str(e)}"
+            "message": f"Failed to get server sales by category: {str(e)}"
         }

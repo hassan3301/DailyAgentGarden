@@ -19,7 +19,7 @@ VELOCE_EMAIL = os.getenv("VELOCE_EMAIL", "")
 VELOCE_PASSWORD = os.getenv("VELOCE_PASSWORD", "")
 
 # Gemini Model Configuration
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-pro"  # Use the latest Gemini Pro model for best performance
 
 # Session Configuration
 SESSION_APP_NAME = "veloce_restaurant_agent"

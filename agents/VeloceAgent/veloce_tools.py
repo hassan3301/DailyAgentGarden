@@ -842,24 +842,12 @@ def get_sales_by_category(
             pct = (cat["sales_amount_raw"] / total_sales * 100) if total_sales > 0 else 0
             cat["percentage"] = round(pct, 2)
         
-        # Calculate main meals vs upsells
-        main_meal_sales = sum(
-            cat["sales_amount_raw"] 
-            for cat in categories 
-            if cat["name"].upper() in ["BREAKFAST", "LUNCH"]
-        )
-        upsell_sales = total_sales - main_meal_sales
-        
         return {
             "status": "success",
             "period": f"{from_date} to {to_date}",
             "total_categories": len(categories),
             "total_sales": format_currency(total_sales),
             "total_sales_raw": total_sales,
-            "main_meal_sales": format_currency(main_meal_sales),
-            "main_meal_percentage": round((main_meal_sales / total_sales * 100) if total_sales > 0 else 0, 2),
-            "upsell_sales": format_currency(upsell_sales),
-            "upsell_percentage": round((upsell_sales / total_sales * 100) if total_sales > 0 else 0, 2),
             "categories": categories
         }
         

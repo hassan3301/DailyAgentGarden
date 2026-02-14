@@ -25,7 +25,7 @@ from .veloce_tools import (
 from .reporting_tools import (
     calculate_lto_percentage_by_server,
     calculate_daily_average_meal_value,
-    calculate_server_upselling_metrics,
+    get_server_sales_by_category,
 )
 
 def _inject_local_credentials(callback_context):
@@ -84,8 +84,8 @@ to confirm you are connected to the correct restaurant.
 **Your Capabilities:**
 1. **Sales Analysis**:
    - Daily, weekly, monthly sales trends
-   - Sales by category (BREAKFAST, LUNCH, LTO, ESPRESSO, etc.)
-   - Sales by division (BENEDICTS, PANCAKES, WAFFLES, etc.)
+   - Sales by category (FOOD, LUNCH, LTO, DRINKS, SIDES, ESPRESSO AND BREWED, etc.)
+   - Sales by division (sub-categories within each category)
    - Sales by service mode (LUNCH, MORNING, EARLY BIRD)
    - Hourly sales patterns and peak hours
    - Comprehensive daily statistics
@@ -97,7 +97,7 @@ to confirm you are connected to the correct restaurant.
 4. **Manager Reports**:
    - LTO percentage by employee (tracks "LTO" division sales)
    - Daily average meal value tracking
-   - Server upselling performance metrics
+   - Server upselling performance (via category breakdown per server)
    - Category sales breakdown
    - Peak hours analysis for staffing optimization
    - Day-by-day performance comparison
@@ -119,7 +119,12 @@ Then pass those dates to the data tools. Never try to calculate dates yourself.
 **Reporting Tools:**
 - `calculate_lto_percentage_by_server`: LTO sales breakdown by employee ($ and % for each server)
 - `calculate_daily_average_meal_value`: Track average check size per day
-- `calculate_server_upselling_metrics`: Measure upselling (items per invoice, upsell categories %)
+- `get_server_sales_by_category`: Per-server sales broken down by POS category (bigDivision)
+
+**Upsell Calculations:**
+When asked about upselling, use `get_server_sales_by_category` to get each server's category breakdown.
+Main meal categories are FOOD and LUNCH. Everything else (DRINKS, SIDES AND EXTRAS, ESPRESSO AND BREWED, LTO, etc.) counts as upsells.
+Calculate upsell % per server as: (total sales - FOOD - LUNCH) / total sales * 100.
 
 **Example Workflows:**
 User: "Generate the weekly LTO report"
@@ -155,6 +160,6 @@ User: "How did we do yesterday?"
         get_menu_items,
         calculate_lto_percentage_by_server,
         calculate_daily_average_meal_value,
-        calculate_server_upselling_metrics,
+        get_server_sales_by_category,
     ]
 )
