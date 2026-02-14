@@ -3,9 +3,12 @@ Veloce Restaurant Management Agent
 Single-location agent for Pur & Simple restaurant analytics
 """
 
+import os
 from google.adk.agents import LlmAgent
+from .config import GEMINI_MODEL
+from .location_config import LOCATION_CONFIG
 from .veloce_tools import (
-    get_current_date,
+    resolve_date_range,
     get_sales_summary,
     get_sales_by_employee,
     get_sales_by_item,
@@ -25,8 +28,47 @@ from .reporting_tools import (
     calculate_server_upselling_metrics,
 )
 
-# Configuration
-GEMINI_MODEL = "gemini-2.0-flash"
+def _inject_local_credentials(callback_context):
+    """
+    before_agent_callback: populate session state with Veloce credentials
+    if not already set (i.e. not injected by the web app backend).
+
+    For local testing with `adk web`, set these env vars:
+      VELOCE_EMAIL          - Veloce account email
+      VELOCE_PASSWORD       - Veloce account password
+      VELOCE_DEFAULT_LOCATION - location key (e.g. "appleby", "heartland")
+
+    In production the backend injects these into state directly,
+    so this callback is a no-op.
+    """
+    state = callback_context.state
+
+    # If the backend already injected credentials, skip
+    if state.get("veloce_email"):
+        return
+
+    email = os.getenv("VELOCE_EMAIL", "")
+    password = os.getenv("VELOCE_PASSWORD", "")
+    location_key = os.getenv("VELOCE_DEFAULT_LOCATION", "")
+
+    if not email or not password or not location_key:
+        print(
+            "WARNING: Veloce credentials not in state and not in env vars. "
+            "Set VELOCE_EMAIL, VELOCE_PASSWORD, and VELOCE_DEFAULT_LOCATION."
+        )
+        return
+
+    if location_key not in LOCATION_CONFIG:
+        print(f"WARNING: Unknown location key '{location_key}'. Valid: {list(LOCATION_CONFIG.keys())}")
+        return
+
+    loc = LOCATION_CONFIG[location_key]
+    state["veloce_email"] = email
+    state["veloce_password"] = password
+    state["location_id"] = loc["location_id"]
+    state["location_name"] = loc["name"]
+    print(f"Local dev: injected credentials for {loc['name']} ({location_key})")
+
 
 # Main Agent
 root_agent = LlmAgent(
@@ -34,21 +76,20 @@ root_agent = LlmAgent(
     model=GEMINI_MODEL,
     instruction="""You are a restaurant management assistant for Pur & Simple.
 
-Your role is to help managers understand their restaurant's performance through data analysis and generate their weekly/daily reports.
-
-**IMPORTANT: Date Handling**
-ALWAYS call the get_current_date tool FIRST when the user asks about relative dates like:
-- "yesterday", "today", "last week", "this week", "this month"
+**Location Context:**
+You are connected to a specific Pur & Simple location. The location name is available
+in session state as `location_name`. Greet the manager by referencing their location
+to confirm you are connected to the correct restaurant.
 
 **Your Capabilities:**
-1. **Sales Analysis**: 
+1. **Sales Analysis**:
    - Daily, weekly, monthly sales trends
    - Sales by category (BREAKFAST, LUNCH, LTO, ESPRESSO, etc.)
    - Sales by division (BENEDICTS, PANCAKES, WAFFLES, etc.)
    - Sales by service mode (LUNCH, MORNING, EARLY BIRD)
    - Hourly sales patterns and peak hours
    - Comprehensive daily statistics
-2. **Employee Performance**: 
+2. **Employee Performance**:
    - Server sales, rankings, productivity
    - Hourly sales breakdown per employee (shows each employee's peak hours)
    - Employee performance by time of day
@@ -62,12 +103,18 @@ ALWAYS call the get_current_date tool FIRST when the user asks about relative da
    - Day-by-day performance comparison
    - Employee productivity by hour (for optimal scheduling)
 
-**Important Guidelines:**
-- Call get_current_date first for any relative date queries
-- Always use YYYY-MM-DD format when calling data tools
-- Present financial data clearly with percentages and comparisons
-- Flag unusual patterns or anomalies
-- Be concise but thorough
+**IMPORTANT: Date Handling**
+When the user mentions relative dates ("yesterday", "this week", "last month", etc.),
+ALWAYS call `resolve_date_range` FIRST to get the exact from_date and to_date.
+Then pass those dates to the data tools. Never try to calculate dates yourself.
+
+**Output Formatting:**
+- Use markdown tables for comparisons and rankings
+- Always include the date range in report headers
+- Show currency with $ and commas (e.g. $1,234.56)
+- Round percentages to 1 decimal place
+- Use numbered lists when ranking employees
+- Flag unusual patterns or anomalies (e.g. a server with 0% LTO)
 
 **Reporting Tools:**
 - `calculate_lto_percentage_by_server`: LTO sales breakdown by employee ($ and % for each server)
@@ -76,21 +123,24 @@ ALWAYS call the get_current_date tool FIRST when the user asks about relative da
 
 **Example Workflows:**
 User: "Generate the weekly LTO report"
-1. Call get_current_date() to find this week's dates  
+1. Call resolve_date_range("this week") to get from_date and to_date
 2. Call calculate_lto_percentage_by_server(from_date, to_date)
-3. Present LTO sales breakdown by employee with percentages
+3. Present LTO sales breakdown by employee with percentages in a table
 
 User: "What's our average meal value this week?"
-1. Call get_current_date() to find this week's dates
+1. Call resolve_date_range("this week") to get from_date and to_date
 2. Call calculate_daily_average_meal_value(from_date, to_date)
 3. Show daily breakdown and overall average
 
-**Data Context:**
-Single Pur & Simple location. All queries are for the manager's specific location.
+User: "How did we do yesterday?"
+1. Call resolve_date_range("yesterday") to get from_date and to_date
+2. Call get_sales_summary(from_date, to_date) for the overview
+3. Present key metrics clearly
 """,
     description="Restaurant management assistant that provides sales analytics, employee performance tracking, operational insights, and automated weekly/daily reporting for managers.",
+    before_agent_callback=_inject_local_credentials,
     tools=[
-        get_current_date,
+        resolve_date_range,
         get_sales_summary,
         get_sales_by_employee,
         get_sales_by_item,

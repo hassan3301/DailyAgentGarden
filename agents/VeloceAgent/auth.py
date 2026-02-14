@@ -5,7 +5,7 @@ Handles login and token management
 
 import requests
 from typing import Dict
-from VeloceAgent.config import VELOCE_API_BASE_URL
+from .config import VELOCE_API_BASE
 
 
 def authenticate_veloce(email: str, password: str) -> Dict[str, str]:
@@ -24,7 +24,7 @@ def authenticate_veloce(email: str, password: str) -> Dict[str, str]:
     """
     try:
         response = requests.post(
-            f"{VELOCE_API_BASE_URL}/users/authenticate",
+            f"{VELOCE_API_BASE}/users/authenticate",
             json={
                 "email": email,
                 "password": password
@@ -62,7 +62,7 @@ def refresh_token(current_token: str) -> str:
     """
     try:
         response = requests.post(
-            f"{VELOCE_API_BASE_URL}/users/refreshToken",
+            f"{VELOCE_API_BASE}/users/refreshToken",
             headers={"Authorization": f"Bearer {current_token}"}
         )
         response.raise_for_status()
@@ -86,7 +86,7 @@ def get_user_locations(token: str) -> list:
     """
     try:
         response = requests.get(
-            f"{VELOCE_API_BASE_URL}/locations",
+            f"{VELOCE_API_BASE}/locations",
             headers={"Authorization": f"Bearer {token}"}
         )
         response.raise_for_status()

@@ -8,52 +8,77 @@ from google.adk.tools import ToolContext
 from typing import Optional, List
 import requests
 from datetime import datetime, timedelta
-import os
+import time
 
-# Veloce API Configuration
-VELOCE_API_BASE = "https://api.posveloce.com"
+from .config import VELOCE_API_BASE
 
 
-def get_current_date(tool_context: ToolContext) -> dict:
+def resolve_date_range(tool_context: ToolContext, period: str) -> dict:
     """
-    Get the current date and time information.
-    Use this tool to find out what today's date is before making date calculations.
-    
+    Resolve a natural-language time period into from_date and to_date strings.
+    ALWAYS call this first when the user mentions relative dates.
+
+    Args:
+        period: One of: "today", "yesterday", "this week", "last week",
+                "this month", "last month", or an explicit range like
+                "2025-06-01 to 2025-06-07"
+
     Returns:
-        Dictionary with current date information including:
-        - today: Current date in YYYY-MM-DD format
-        - yesterday: Previous day in YYYY-MM-DD format
-        - current_week_start: Monday of current week
-        - current_week_end: Sunday of current week
-        - current_month_start: First day of current month
+        Dictionary with from_date, to_date (YYYY-MM-DD), and a human description.
+        Pass these dates directly to the other sales/reporting tools.
     """
     now = datetime.now()
-    
-    # Calculate useful date references
-    yesterday = now - timedelta(days=1)
-    
-    # Current week (Monday to Sunday)
-    week_start = now - timedelta(days=now.weekday())
-    week_end = week_start + timedelta(days=6)
-    
-    # Current month
-    month_start = now.replace(day=1)
-    
+    period_lower = period.strip().lower()
+
+    if " to " in period_lower:
+        parts = period_lower.split(" to ")
+        from_date = parts[0].strip()
+        to_date = parts[1].strip()
+        description = f"{from_date} to {to_date}"
+    elif period_lower == "today":
+        from_date = to_date = now.strftime("%Y-%m-%d")
+        description = f"Today ({now.strftime('%A, %B %d, %Y')})"
+    elif period_lower == "yesterday":
+        yesterday = now - timedelta(days=1)
+        from_date = to_date = yesterday.strftime("%Y-%m-%d")
+        description = f"Yesterday ({yesterday.strftime('%A, %B %d, %Y')})"
+    elif period_lower == "this week":
+        week_start = now - timedelta(days=now.weekday())
+        week_end = week_start + timedelta(days=6)
+        from_date = week_start.strftime("%Y-%m-%d")
+        to_date = week_end.strftime("%Y-%m-%d")
+        description = f"This week ({from_date} to {to_date})"
+    elif period_lower == "last week":
+        last_week_end = now - timedelta(days=now.weekday() + 1)
+        last_week_start = last_week_end - timedelta(days=6)
+        from_date = last_week_start.strftime("%Y-%m-%d")
+        to_date = last_week_end.strftime("%Y-%m-%d")
+        description = f"Last week ({from_date} to {to_date})"
+    elif period_lower == "this month":
+        from_date = now.replace(day=1).strftime("%Y-%m-%d")
+        to_date = now.strftime("%Y-%m-%d")
+        description = f"This month ({from_date} to {to_date})"
+    elif period_lower == "last month":
+        first_of_this_month = now.replace(day=1)
+        last_month_end = first_of_this_month - timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
+        from_date = last_month_start.strftime("%Y-%m-%d")
+        to_date = last_month_end.strftime("%Y-%m-%d")
+        description = f"Last month ({from_date} to {to_date})"
+    else:
+        return {
+            "status": "error",
+            "message": f"Unrecognized period: '{period}'. Use: today, yesterday, this week, last week, this month, last month, or 'YYYY-MM-DD to YYYY-MM-DD'."
+        }
+
     result = {
         "status": "success",
-        "today": now.strftime("%Y-%m-%d"),
-        "yesterday": yesterday.strftime("%Y-%m-%d"),
-        "current_week_start": week_start.strftime("%Y-%m-%d"),
-        "current_week_end": week_end.strftime("%Y-%m-%d"),
-        "current_month_start": month_start.strftime("%Y-%m-%d"),
-        "current_time": now.strftime("%H:%M:%S"),
-        "day_of_week": now.strftime("%A"),
-        "formatted_date": now.strftime("%B %d, %Y")
+        "from_date": from_date,
+        "to_date": to_date,
+        "description": description
     }
-    
-    # Save to session state for easy reference
-    tool_context.state["app:current_date_info"] = result
-    
+
+    tool_context.state["app:last_date_range"] = result
     return result
 
 
@@ -64,10 +89,15 @@ def get_auth_token(tool_context: ToolContext) -> str:
     
     Credentials are passed through session state (already fetched by the backend).
     """
-    # Check if we already have a valid token in state
+    # Check if we already have a valid token that hasn't expired
     token = tool_context.state.get("veloce_token")
-    if token:
-        return token
+    token_time = tool_context.state.get("veloce_token_time")
+    if token and token_time:
+        age_minutes = (time.time() - token_time) / 60
+        if age_minutes < 50:  # Re-auth before typical 60min JWT expiry
+            return token
+        print("--- Token expired (>50 min), re-authenticating ---")
+        tool_context.state["veloce_token"] = None
     
     print("--- No token found, authenticating with Veloce API ---")
     
@@ -95,8 +125,9 @@ def get_auth_token(tool_context: ToolContext) -> str:
         auth_data = authenticate_veloce(veloce_email, veloce_password)
         token = auth_data["token"]
         
-        # Store token in session state (safe to store)
+        # Store token and timestamp in session state
         tool_context.state["veloce_token"] = token
+        tool_context.state["veloce_token_time"] = time.time()
         tool_context.state["user:veloce_user_id"] = auth_data.get("user_id")
         tool_context.state["user:manager_name"] = f"{auth_data.get('first_name', '')} {auth_data.get('last_name', '')}".strip()
         
@@ -134,6 +165,97 @@ def format_currency(amount: float, currency: str = "$") -> str:
     return f"{currency}{amount:,.2f}"
 
 
+def _api_get(tool_context: ToolContext, url: str, params: dict = None) -> requests.Response:
+    """
+    Wrapper around requests.get that handles 401 token expiry.
+    On a 401, clears the cached token, re-authenticates, and retries once.
+    """
+    token = get_auth_token(tool_context)
+    response = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        params=params
+    )
+    if response.status_code == 401:
+        print("--- Got 401, clearing token and re-authenticating ---")
+        tool_context.state["veloce_token"] = None
+        token = get_auth_token(tool_context)
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            params=params
+        )
+    return response
+
+
+def get_cached_employee_detail_data(tool_context: ToolContext, from_date: str, to_date: str) -> dict:
+    """
+    Fetch and cache the three datasets that reporting tools need:
+    employee sales aggregate, employee names, and detailed per-item sales.
+    Caches in session state so multiple reporting tools don't repeat API calls.
+    """
+    cache_key = f"temp:emp_detail_{from_date}_{to_date}"
+    cached = tool_context.state.get(cache_key)
+    if cached:
+        print(f"--- Using cached employee detail data for {from_date} to {to_date} ---")
+        return cached
+
+    print(f"--- Fetching employee detail data for {from_date} to {to_date} ---")
+    location_id = get_location_id(tool_context)
+    from_datetime = f"{from_date}T00:00:00Z"
+    to_datetime = f"{to_date}T23:59:59Z"
+
+    # 1. Employee sales aggregate
+    emp_sales_resp = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/locations/employees", {
+        "locationIDs": [location_id],
+        "from": from_datetime,
+        "to": to_datetime
+    })
+    emp_sales_resp.raise_for_status()
+    emp_sales_data = emp_sales_resp.json()
+
+    employee_totals = {}
+    active_employee_ids = []
+    if "content" in emp_sales_data and len(emp_sales_data["content"]) > 0:
+        for emp in emp_sales_data["content"][0].get("employees", []):
+            emp_id = emp.get("id")
+            if emp_id:
+                employee_totals[emp_id] = {
+                    "sales_amount": emp.get("salesAmount", 0),
+                    "sales_count": emp.get("salesCount", 0),
+                    "employee_obj": emp.get("employee")
+                }
+                active_employee_ids.append(emp_id)
+
+    # 2. Employee names
+    emp_list_resp = _api_get(tool_context, f"{VELOCE_API_BASE}/employees", {
+        "locationIDs": [location_id]
+    })
+    emp_list_resp.raise_for_status()
+    employee_map = {}
+    for emp in emp_list_resp.json():
+        if emp["id"] in active_employee_ids:
+            employee_map[emp["id"]] = emp.get("name", "Unknown")
+
+    # 3. Detailed per-item sales
+    detail_resp = _api_get(tool_context, f"{VELOCE_API_BASE}/locations/{location_id}/employees/sales", {
+        "from": from_datetime,
+        "to": to_datetime
+    })
+    detail_resp.raise_for_status()
+    detail_data = detail_resp.json()
+
+    result = {
+        "employee_totals": employee_totals,
+        "employee_map": employee_map,
+        "detail_data": detail_data,
+        "active_employee_ids": active_employee_ids
+    }
+
+    tool_context.state[cache_key] = result
+    return result
+
+
 def get_sales_summary(
     tool_context: ToolContext,
     from_date: str,
@@ -157,26 +279,21 @@ def get_sales_summary(
         # Returns today's sales summary
     """
     print(f"--- get_sales_summary: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     # Convert dates to ISO datetime format for API
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
         # Use /sales/locations endpoint for aggregated summary
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/locations",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime,
-                "consolidated": True  # Get consolidated totals
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/locations", {
+            "locationIDs": [location_id],
+            "from": from_datetime,
+            "to": to_datetime,
+            "consolidated": True
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -264,26 +381,20 @@ def get_sales_by_employee(
         Dictionary containing employee sales data
     """
     print(f"--- get_sales_by_employee: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
-        # Use /sales/locations/employees for aggregated employee sales
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/locations/employees",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime,
-                "limit": limit,
-                "include": "employee"  # Include employee details
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/locations/employees", {
+            "locationIDs": [location_id],
+            "from": from_datetime,
+            "to": to_datetime,
+            "limit": limit,
+            "include": "employee"
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -295,18 +406,15 @@ def get_sales_by_employee(
             # Get employee roster to map IDs to names
             employee_map = tool_context.state.get("app:employee_map", {})
             if not employee_map:
-                # Fetch employee list if not cached
                 try:
-                    emp_response = requests.get(
-                        f"{VELOCE_API_BASE}/employees",
-                        headers={"Authorization": f"Bearer {token}"},
-                        params={"locationIDs": [location_id]}
-                    )
+                    emp_response = _api_get(tool_context, f"{VELOCE_API_BASE}/employees", {
+                        "locationIDs": [location_id]
+                    })
                     emp_response.raise_for_status()
                     employees_list = emp_response.json()
                     employee_map = {emp["id"]: emp.get("name", "Unknown") for emp in employees_list}
                     tool_context.state["app:employee_map"] = employee_map
-                except:
+                except Exception:
                     print("Warning: Could not fetch employee names")
             
             # Format employee sales for easy reading
@@ -388,24 +496,19 @@ def get_sales_by_item(
         Dictionary containing item sales data
     """
     print(f"--- get_sales_by_item: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/items",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime,
-                "limit": limit
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/items", {
+            "locationIDs": [location_id],
+            "from": from_datetime,
+            "to": to_datetime,
+            "limit": limit
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -465,18 +568,13 @@ def get_employee_list(
         Dictionary containing employee roster
     """
     print(f"--- get_employee_list: active_only={active_only} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/employees",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id]
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/employees", {
+            "locationIDs": [location_id]
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -539,29 +637,24 @@ def get_invoices(
         Dictionary containing invoice data
     """
     print(f"--- get_invoices: {from_date} to {to_date}, include_items={include_items} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     params = {
         "locationIDs": [location_id],
         "from": from_datetime,
         "to": to_datetime,
         "limit": limit
     }
-    
+
     if include_items:
         params["include"] = ["items"]
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/invoices",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/invoices", params)
         response.raise_for_status()
         data = response.json()
         
@@ -624,23 +717,15 @@ def get_menu_items(
         Dictionary containing menu items
     """
     print(f"--- get_menu_items: active_only={active_only}, search={search} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
-    params = {
-        "locationIDs": [location_id]
-    }
-    
+
+    params = {"locationIDs": [location_id]}
     if search:
         params["search"] = search
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/items",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/items", params)
         response.raise_for_status()
         data = response.json()
         
@@ -701,24 +786,19 @@ def get_sales_by_category(
         Dictionary with category sales breakdown including totals and percentages
     """
     print(f"--- get_sales_by_category: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
         # Note: Using singular locationID (deprecated parameter) because locationIDs array doesn't work
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/bigDivisions",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationID": location_id,
-                "from": from_datetime,
-                "to": to_datetime
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/bigDivisions", {
+            "locationID": location_id,
+            "from": from_datetime,
+            "to": to_datetime
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -811,23 +891,18 @@ def get_sales_by_division(
         Dictionary with division sales breakdown grouped by category
     """
     print(f"--- get_sales_by_division: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/divisions",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationID": location_id,
-                "from": from_datetime,
-                "to": to_datetime
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/divisions", {
+            "locationID": location_id,
+            "from": from_datetime,
+            "to": to_datetime
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -946,23 +1021,18 @@ def get_sales_by_mode(
         Dictionary with mode sales breakdown
     """
     print(f"--- get_sales_by_mode: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/modes",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationID": location_id,
-                "from": from_datetime,
-                "to": to_datetime
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/modes", {
+            "locationID": location_id,
+            "from": from_datetime,
+            "to": to_datetime
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -1048,23 +1118,18 @@ def get_hourly_sales(
         Dictionary with hourly sales breakdown and peak hours
     """
     print(f"--- get_hourly_sales: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/hourly",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationID": location_id,
-                "from": from_datetime,
-                "to": to_datetime
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/hourly", {
+            "locationID": location_id,
+            "from": from_datetime,
+            "to": to_datetime
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -1174,24 +1239,19 @@ def get_daily_stats(
         Dictionary with daily statistics breakdown
     """
     print(f"--- get_daily_stats: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/locations",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime,
-                "groupByDate": "true"
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/locations", {
+            "locationIDs": [location_id],
+            "from": from_datetime,
+            "to": to_datetime,
+            "groupByDate": "true"
+        })
         response.raise_for_status()
         data = response.json()
         
@@ -1309,26 +1369,20 @@ def get_employee_hourly_sales(
         Dictionary with hourly sales breakdown per employee
     """
     print(f"--- get_employee_hourly_sales: {from_date} to {to_date} ---")
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
-        # Get invoices which have employee and time info
         # Note: Using limit=250 (max), may need pagination for longer periods
-        response = requests.get(
-            f"{VELOCE_API_BASE}/invoices",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime,
-                "limit": 250
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/invoices", {
+            "locationIDs": [location_id],
+            "from": from_datetime,
+            "to": to_datetime,
+            "limit": 250
+        })
         response.raise_for_status()
         invoices = response.json()
         
@@ -1376,12 +1430,10 @@ def get_employee_hourly_sales(
         
         # Fetch employee names
         employee_names = {}
-        emp_response = requests.get(
-            f"{VELOCE_API_BASE}/employees",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"locationIDs": [location_id]}
-        )
-        
+        emp_response = _api_get(tool_context, f"{VELOCE_API_BASE}/employees", {
+            "locationIDs": [location_id]
+        })
+
         if emp_response.status_code == 200:
             employees_list = emp_response.json()
             for emp in employees_list:

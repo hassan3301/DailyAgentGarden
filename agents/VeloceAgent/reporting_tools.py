@@ -3,10 +3,17 @@ Specialized reporting tools for Pur & Simple manager metrics
 These tools calculate weekly/daily KPIs that managers need to report
 """
 
+import traceback
 from google.adk.tools import ToolContext
 from typing import Optional, List
-import requests
-from datetime import datetime, timedelta
+
+from .veloce_tools import (
+    get_cached_employee_detail_data,
+    get_location_id,
+    format_currency,
+    _api_get,
+    VELOCE_API_BASE,
+)
 
 
 def calculate_lto_percentage_by_server(
@@ -24,163 +31,67 @@ def calculate_lto_percentage_by_server(
     print(f"{'='*60}")
     print(f"Date range: {from_date} to {to_date}")
     print(f"Looking for LTO in: '{lto_category_name}'")
-    
+
     try:
-        from .veloce_tools import get_auth_token, get_location_id, format_currency, VELOCE_API_BASE
-    except ImportError:
-        from veloce_tools import get_auth_token, get_location_id, format_currency, VELOCE_API_BASE
-    
-    token = get_auth_token(tool_context)
-    location_id = get_location_id(tool_context)
-    
-    from_datetime = f"{from_date}T00:00:00Z"
-    to_datetime = f"{to_date}T23:59:59Z"
-    
-    try:
-        # Step 1: Get employees who actually worked
-        print(f"\nStep 1: Getting employees with sales...")
-        emp_sales_response = requests.get(
-            f"{VELOCE_API_BASE}/sales/locations/employees",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime
-            }
-        )
-        emp_sales_response.raise_for_status()
-        emp_sales_data = emp_sales_response.json()
-        
-        # Extract employees who worked and their totals
-        employee_totals = {}
-        active_employee_ids = []
-        
-        if "content" in emp_sales_data and len(emp_sales_data["content"]) > 0:
-            for emp in emp_sales_data["content"][0].get("employees", []):
-                emp_id = emp.get("id")
-                if emp_id:
-                    employee_totals[emp_id] = emp.get("salesAmount", 0)
-                    active_employee_ids.append(emp_id)
-        
+        # Use shared data layer (cached if already fetched by another report)
+        data = get_cached_employee_detail_data(tool_context, from_date, to_date)
+        employee_totals = data["employee_totals"]
+        employee_map = data["employee_map"]
+        detail_data = data["detail_data"]
+        active_employee_ids = data["active_employee_ids"]
+
         print(f"Found {len(active_employee_ids)} employees who worked")
-        
+
         if len(active_employee_ids) == 0:
             return {
                 "status": "no_data",
                 "message": f"No employee sales found for {from_date} to {to_date}"
             }
-        
-        # Step 2: Get employee names
-        print(f"\nStep 2: Getting employee names...")
-        employee_map = {}
-        emp_list_response = requests.get(
-            f"{VELOCE_API_BASE}/employees",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"locationIDs": [location_id]}
-        )
-        emp_list_response.raise_for_status()
-        all_employees = emp_list_response.json()
-        
-        for emp in all_employees:
-            if emp["id"] in active_employee_ids:
-                employee_map[emp["id"]] = emp.get("name", "Unknown")
-        
-        # Step 3: Get ALL detailed sales (default parameters work perfectly!)
-        print(f"\nStep 3: Getting all detailed sales data...")
-        detail_response = requests.get(
-            f"{VELOCE_API_BASE}/locations/{location_id}/employees/sales",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "from": from_datetime,
-                "to": to_datetime
-            }
-        )
-        detail_response.raise_for_status()
-        all_detail_data = detail_response.json()
-        
-        print(f"Received {len(all_detail_data)} total sales records")
-        
-        # Show sample structure for debugging
-        if len(all_detail_data) > 0:
-            sample = all_detail_data[0]
-            print(f"\nSample record structure:")
-            print(f"  Employee ID: {sample.get('employeeId', 'N/A')}")
-            print(f"  Employee Name: {sample.get('employeeName', 'N/A')}")
-            print(f"  BigDivision (Category): {sample.get('bigDivision', {}).get('name', 'N/A')}")
-            print(f"  Division (Sub-Category): {sample.get('division', {}).get('name', 'N/A')}")
-            print(f"  Item: {sample.get('item', {}).get('name', 'N/A')}")
-            print(f"  Sales Amount: ${sample.get('salesAmount', 0)}")
-        
+
+        print(f"Received {len(detail_data)} total sales records")
+
         # Initialize tracking
         employee_lto_sales = {emp_id: 0 for emp_id in active_employee_ids}
         employee_lto_qty = {emp_id: 0 for emp_id in active_employee_ids}
         big_divisions_seen = set()
         divisions_seen = set()
-        records_with_employee = 0
         lto_records_found = 0
-        
+
         # Process ALL sales records
-        for sale in all_detail_data:
-            # Check if this record has an employee ID (direct field, not nested)
+        for sale in detail_data:
             emp_id = sale.get("employeeId")
-            if not emp_id:
+            if not emp_id or emp_id not in active_employee_ids:
                 continue
-            
-            records_with_employee += 1
-            
-            # Skip if this employee didn't work during our period
-            if emp_id not in active_employee_ids:
-                continue
-            
-            # Get both category levels
+
             big_division_name = sale.get("bigDivision", {}).get("name", "")
             division_name = sale.get("division", {}).get("name", "")
-            
+
             big_divisions_seen.add(big_division_name)
             divisions_seen.add(division_name)
-            
+
             # Check if this is LTO - check BOTH bigDivision and division
             is_lto = (
                 big_division_name.upper() == lto_category_name.upper() or
                 division_name.upper() == lto_category_name.upper()
             )
-            
+
             if is_lto:
                 sales_amount = sale.get("salesAmount", 0)
                 quantity = sale.get("quantity", 0)
                 employee_lto_sales[emp_id] += sales_amount
                 employee_lto_qty[emp_id] += quantity
                 lto_records_found += 1
-                
-                if lto_records_found <= 5:  # Show first 5 LTO items for debugging
-                    item_name = sale.get("item", {}).get("name", "Unknown")
-                    emp_name = employee_map.get(emp_id, f"Employee {emp_id[:8]}")
-                    print(f"  LTO item: {emp_name} - {item_name} (${sales_amount}, BigDiv: {big_division_name}, Div: {division_name})")
-        
-        print(f"\nRecords with employee ID: {records_with_employee}/{len(all_detail_data)}")
+
         print(f"LTO records found: {lto_records_found}")
-        print(f"BigDivisions (Categories) seen: {sorted(big_divisions_seen)}")
-        print(f"Divisions (Sub-categories) seen: {sorted(divisions_seen)}")
-        
-        # Show LTO sales per employee
-        print(f"\nLTO Sales by Employee:")
-        for emp_id in active_employee_ids:
-            emp_name = employee_map.get(emp_id, f"Employee {emp_id[:8]}")
-            lto_amount = employee_lto_sales[emp_id]
-            lto_qty = employee_lto_qty[emp_id]
-            if lto_amount > 0:
-                print(f"  ✓ {emp_name}: ${lto_amount:.2f} ({lto_qty} items)")
-            else:
-                print(f"    {emp_name}: $0.00 (no LTO sales)")
-        
-        # Step 4: Calculate percentages
+
+        # Calculate percentages
         results = []
         for emp_id in active_employee_ids:
-            total = employee_totals[emp_id]
+            total = employee_totals[emp_id]["sales_amount"]
             lto_sales = employee_lto_sales[emp_id]
             lto_qty = employee_lto_qty[emp_id]
             lto_percentage = (lto_sales / total * 100) if total > 0 else 0
-            
+
             results.append({
                 "employee_name": employee_map.get(emp_id, f"Employee {emp_id[:8]}"),
                 "employee_id": emp_id,
@@ -191,21 +102,19 @@ def calculate_lto_percentage_by_server(
                 "lto_quantity": lto_qty,
                 "lto_percentage": round(lto_percentage, 2)
             })
-        
-        # Sort by LTO percentage descending
+
         results.sort(key=lambda x: x["lto_percentage"], reverse=True)
-        
-        total_all_sales = sum(employee_totals.values())
+
+        total_all_sales = sum(t["sales_amount"] for t in employee_totals.values())
         total_lto_sales = sum(employee_lto_sales.values())
         total_lto_qty = sum(employee_lto_qty.values())
-        
+
         print(f"\nFinal Summary:")
-        print(f"  Total Sales (all employees): ${total_all_sales:.2f}")
+        print(f"  Total Sales: ${total_all_sales:.2f}")
         print(f"  Total LTO Sales: ${total_lto_sales:.2f}")
-        print(f"  Total LTO Quantity: {total_lto_qty}")
         print(f"  Overall LTO %: {(total_lto_sales/total_all_sales*100 if total_all_sales > 0 else 0):.2f}%")
         print(f"{'='*60}\n")
-        
+
         return {
             "status": "success",
             "period": f"{from_date} to {to_date}",
@@ -221,11 +130,9 @@ def calculate_lto_percentage_by_server(
                 "overall_lto_percentage": round(total_lto_sales / total_all_sales * 100, 2) if total_all_sales > 0 else 0
             }
         }
-        
+
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"\nERROR: {error_trace}")
+        print(f"\nERROR: {traceback.format_exc()}")
         return {
             "status": "error",
             "error": str(e),
@@ -240,49 +147,38 @@ def calculate_daily_average_meal_value(
 ) -> dict:
     """
     Calculate the average meal value (check average) for each day in the date range.
-    Average Meal Value = Total Sales ÷ Meal Count
+    Average Meal Value = Total Sales / Meal Count
     """
     print(f"--- calculate_daily_average_meal_value: {from_date} to {to_date} ---")
-    
-    try:
-        from .veloce_tools import get_auth_token, get_location_id, format_currency, VELOCE_API_BASE
-    except ImportError:
-        from veloce_tools import get_auth_token, get_location_id, format_currency, VELOCE_API_BASE
-    
-    token = get_auth_token(tool_context)
+
     location_id = get_location_id(tool_context)
-    
+
     from_datetime = f"{from_date}T00:00:00Z"
     to_datetime = f"{to_date}T23:59:59Z"
-    
+
     try:
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/locations",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime,
-                "groupByDate": True
-            }
-        )
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/locations", {
+            "locationIDs": [location_id],
+            "from": from_datetime,
+            "to": to_datetime,
+            "groupByDate": True
+        })
         response.raise_for_status()
         data = response.json()
-        
+
         daily_values = []
         total_sales = 0
         total_meals = 0
-        
+
         for day_data in data:
             sales_amount = day_data.get("salesAmount", 0)
             meal_count = day_data.get("mealCount", 0)
-            # Use accountingTime for the date, fallback to date field
             date = day_data.get("accountingTime", day_data.get("date", "Unknown"))
             if date and date != "Unknown":
-                date = date[:10]  # Extract YYYY-MM-DD
-            
+                date = date[:10]
+
             avg_value = sales_amount / meal_count if meal_count > 0 else 0
-            
+
             daily_values.append({
                 "date": date,
                 "total_sales": format_currency(sales_amount),
@@ -290,12 +186,12 @@ def calculate_daily_average_meal_value(
                 "average_meal_value": format_currency(avg_value),
                 "average_meal_value_raw": avg_value
             })
-            
+
             total_sales += sales_amount
             total_meals += meal_count
-        
+
         overall_avg = total_sales / total_meals if total_meals > 0 else 0
-        
+
         return {
             "status": "success",
             "period": f"{from_date} to {to_date}",
@@ -307,9 +203,8 @@ def calculate_daily_average_meal_value(
                 "overall_average_meal_value": format_currency(overall_avg)
             }
         }
-        
+
     except Exception as e:
-        import traceback
         print(f"Error: {traceback.format_exc()}")
         return {
             "status": "error",
@@ -329,114 +224,61 @@ def calculate_server_upselling_metrics(
     Upsells = Everything EXCEPT main meal categories (BREAKFAST, LUNCH)
     """
     print(f"--- calculate_server_upselling_metrics: {from_date} to {to_date} ---")
-    
+
     if main_meal_categories is None:
         main_meal_categories = ["BREAKFAST", "LUNCH"]
-    
+
     try:
-        from .veloce_tools import get_auth_token, get_location_id, format_currency, VELOCE_API_BASE
-    except ImportError:
-        from veloce_tools import get_auth_token, get_location_id, format_currency, VELOCE_API_BASE
-    
-    token = get_auth_token(tool_context)
-    location_id = get_location_id(tool_context)
-    
-    from_datetime = f"{from_date}T00:00:00Z"
-    to_datetime = f"{to_date}T23:59:59Z"
-    
-    try:
-        # Get employee sales aggregated
-        emp_response = requests.get(
-            f"{VELOCE_API_BASE}/sales/locations/employees",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime,
-                "include": "employee"  # Include employee names
-            }
-        )
-        emp_response.raise_for_status()
-        emp_data = emp_response.json()
-        
-        employee_metrics = {}
-        active_employee_ids = []
-        
-        if "content" in emp_data and len(emp_data["content"]) > 0:
-            for emp in emp_data["content"][0].get("employees", []):
-                emp_id = emp.get("id")
-                if emp_id:
-                    # Get employee name from nested employee object
-                    emp_obj = emp.get("employee")
-                    emp_name = emp_obj.get("name", "Unknown") if emp_obj and isinstance(emp_obj, dict) else "Unknown"
-                    
-                    employee_metrics[emp_id] = {
-                        "name": emp_name,
-                        "sales_count": emp.get("salesCount", 0),
-                        "sales_amount": emp.get("salesAmount", 0)
-                    }
-                    active_employee_ids.append(emp_id)
-        
-        # Get ALL detailed sales
-        detail_response = requests.get(
-            f"{VELOCE_API_BASE}/locations/{location_id}/employees/sales",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "from": from_datetime,
-                "to": to_datetime
-            }
-        )
-        detail_response.raise_for_status()
-        detail_data = detail_response.json()
-        
+        # Use shared data layer (cached if already fetched by LTO report)
+        data = get_cached_employee_detail_data(tool_context, from_date, to_date)
+        employee_totals = data["employee_totals"]
+        employee_map = data["employee_map"]
+        detail_data = data["detail_data"]
+        active_employee_ids = data["active_employee_ids"]
+
         # Process by employee
         employee_item_counts = {emp_id: 0 for emp_id in active_employee_ids}
         employee_upsell_sales = {emp_id: 0 for emp_id in active_employee_ids}
         employee_main_meal_sales = {emp_id: 0 for emp_id in active_employee_ids}
-        
+
         for sale in detail_data:
             emp_id = sale.get("employeeId")
-            if not emp_id:
+            if not emp_id or emp_id not in active_employee_ids:
                 continue
-            
-            if emp_id not in active_employee_ids:
-                continue
-            
+
             quantity = sale.get("quantity", 0)
             sales_amount = sale.get("salesAmount", 0)
             employee_item_counts[emp_id] += quantity
-            
-            # Check category - look at both bigDivision and division
+
             division_name = sale.get("division", {}).get("name", "")
             big_division_name = sale.get("bigDivision", {}).get("name", "")
-            
-            # Check if this is a main meal (BREAKFAST or LUNCH)
+
             is_main_meal = any(
                 cat.upper() in big_division_name.upper() or cat.upper() in division_name.upper()
                 for cat in main_meal_categories
             )
-            
+
             if is_main_meal:
                 employee_main_meal_sales[emp_id] += sales_amount
             else:
-                # Everything else is an upsell
                 employee_upsell_sales[emp_id] += sales_amount
-        
+
         # Compile results
         results = []
-        for emp_id, metrics in employee_metrics.items():
-            sales_count = metrics["sales_count"]
-            sales_amount = metrics["sales_amount"]
-            emp_name = metrics["name"]
+        for emp_id in active_employee_ids:
+            totals = employee_totals[emp_id]
+            sales_count = totals["sales_count"]
+            sales_amount = totals["sales_amount"]
+            emp_name = employee_map.get(emp_id, "Unknown")
             item_count = employee_item_counts[emp_id]
             upsell_amount = employee_upsell_sales[emp_id]
             main_meal_amount = employee_main_meal_sales[emp_id]
-            
+
             avg_items_per_invoice = item_count / sales_count if sales_count > 0 else 0
             upsell_percentage = (upsell_amount / sales_amount * 100) if sales_amount > 0 else 0
             main_meal_percentage = (main_meal_amount / sales_amount * 100) if sales_amount > 0 else 0
             avg_sale_value = sales_amount / sales_count if sales_count > 0 else 0
-            
+
             results.append({
                 "employee_name": emp_name,
                 "employee_id": emp_id,
@@ -450,9 +292,9 @@ def calculate_server_upselling_metrics(
                 "upsell_sales": format_currency(upsell_amount),
                 "upsell_percentage": round(upsell_percentage, 2)
             })
-        
+
         results.sort(key=lambda x: x["upsell_percentage"], reverse=True)
-        
+
         return {
             "status": "success",
             "period": f"{from_date} to {to_date}",
@@ -461,85 +303,11 @@ def calculate_server_upselling_metrics(
             "calculation_method": "Upsells = Total Sales - BREAKFAST - LUNCH",
             "employees": results
         }
-        
+
     except Exception as e:
-        import traceback
         print(f"Error: {traceback.format_exc()}")
         return {
             "status": "error",
             "error": str(e),
             "message": f"Failed to calculate upselling metrics: {str(e)}"
-        }
-
-
-def get_lto_sales_summary(
-    tool_context: ToolContext,
-    from_date: str,
-    to_date: str
-) -> dict:
-    """
-    Get overall LTO sales summary for the location.
-    """
-    print(f"\n--- get_lto_sales_summary: {from_date} to {to_date} ---")
-    
-    try:
-        from .veloce_tools import get_auth_token, get_location_id, format_currency, VELOCE_API_BASE
-    except ImportError:
-        from veloce_tools import get_auth_token, get_location_id, format_currency, VELOCE_API_BASE
-    
-    token = get_auth_token(tool_context)
-    location_id = get_location_id(tool_context)
-    
-    from_datetime = f"{from_date}T00:00:00Z"
-    to_datetime = f"{to_date}T23:59:59Z"
-    
-    try:
-        # Get sales broken down by bigDivision (category)
-        response = requests.get(
-            f"{VELOCE_API_BASE}/sales/bigDivisions",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "locationIDs": [location_id],
-                "from": from_datetime,
-                "to": to_datetime
-            }
-        )
-        response.raise_for_status()
-        data = response.json()
-        
-        # Find LTO category
-        lto_sales = 0
-        lto_qty = 0
-        total_sales = 0
-        
-        for category in data:
-            category_name = category.get("name", "")
-            sales_amount = category.get("salesAmount", 0)
-            quantity = category.get("quantity", 0)
-            
-            total_sales += sales_amount
-            
-            if category_name.upper() == "LTO":
-                lto_sales = sales_amount
-                lto_qty = quantity
-        
-        lto_percentage = (lto_sales / total_sales * 100) if total_sales > 0 else 0
-        
-        return {
-            "status": "success",
-            "period": f"{from_date} to {to_date}",
-            "total_sales": format_currency(total_sales),
-            "lto_sales": format_currency(lto_sales),
-            "lto_quantity": lto_qty,
-            "lto_percentage": round(lto_percentage, 2),
-            "note": "For per-employee LTO breakdown, use Veloce Cloud dashboard (Reports > Employee Sales by Category)"
-        }
-        
-    except Exception as e:
-        import traceback
-        print(f"Error: {traceback.format_exc()}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "message": f"Failed to get LTO summary: {str(e)}"
         }
