@@ -1,12 +1,17 @@
 """
 Veloce Restaurant Management Agent
 Single-location agent for Pur & Simple restaurant analytics
+
+Session state requirements (set by the backend or env vars for local dev):
+  veloce_email      - Veloce account email
+  veloce_password   - Veloce account password
+  location_id       - Veloce location UUID
+  location_name     - Human-readable location name
 """
 
 import os
 from google.adk.agents import LlmAgent
 from .config import GEMINI_MODEL
-from .location_config import LOCATION_CONFIG
 from .veloce_tools import (
     resolve_date_range,
     get_sales_summary,
@@ -28,46 +33,42 @@ from .reporting_tools import (
     get_server_sales_by_category,
 )
 
-def _inject_local_credentials(callback_context):
+
+def _init_session_state(callback_context):
     """
     before_agent_callback: populate session state with Veloce credentials
-    if not already set (i.e. not injected by the web app backend).
+    from env vars if not already set by the backend.
 
-    For local testing with `adk web`, set these env vars:
-      VELOCE_EMAIL          - Veloce account email
-      VELOCE_PASSWORD       - Veloce account password
-      VELOCE_DEFAULT_LOCATION - location key (e.g. "appleby", "heartland")
-
-    In production the backend injects these into state directly,
-    so this callback is a no-op.
+    In production the backend injects these into state when creating the session.
+    For local dev (`adk web`), set these env vars:
+      VELOCE_EMAIL        - Veloce account email
+      VELOCE_PASSWORD     - Veloce account password
+      VELOCE_LOCATION_ID  - Veloce location UUID
+      VELOCE_LOCATION_NAME - Human-readable location name (optional)
     """
     state = callback_context.state
 
-    # If the backend already injected credentials, skip
     if state.get("veloce_email"):
         return
 
-    email = os.getenv("VELOCE_EMAIL", "")
-    password = os.getenv("VELOCE_PASSWORD", "")
-    location_key = os.getenv("VELOCE_DEFAULT_LOCATION", "")
+    env_map = {
+        "veloce_email": "VELOCE_EMAIL",
+        "veloce_password": "VELOCE_PASSWORD",
+        "location_id": "VELOCE_LOCATION_ID",
+        "location_name": "VELOCE_LOCATION_NAME",
+    }
 
-    if not email or not password or not location_key:
-        print(
-            "WARNING: Veloce credentials not in state and not in env vars. "
-            "Set VELOCE_EMAIL, VELOCE_PASSWORD, and VELOCE_DEFAULT_LOCATION."
-        )
+    missing = [env for key, env in env_map.items() if not os.getenv(env) and key != "location_name"]
+    if missing:
+        print(f"WARNING: Missing env vars: {', '.join(missing)}")
         return
 
-    if location_key not in LOCATION_CONFIG:
-        print(f"WARNING: Unknown location key '{location_key}'. Valid: {list(LOCATION_CONFIG.keys())}")
-        return
+    for state_key, env_var in env_map.items():
+        val = os.getenv(env_var, "")
+        if val:
+            state[state_key] = val
 
-    loc = LOCATION_CONFIG[location_key]
-    state["veloce_email"] = email
-    state["veloce_password"] = password
-    state["location_id"] = loc["location_id"]
-    state["location_name"] = loc["name"]
-    print(f"Local dev: injected credentials for {loc['name']} ({location_key})")
+    print(f"Local dev: loaded credentials for {state.get('location_name', state.get('location_id'))}")
 
 
 # Main Agent
@@ -143,7 +144,7 @@ User: "How did we do yesterday?"
 3. Present key metrics clearly
 """,
     description="Restaurant management assistant that provides sales analytics, employee performance tracking, operational insights, and automated weekly/daily reporting for managers.",
-    before_agent_callback=_inject_local_credentials,
+    before_agent_callback=_init_session_state,
     tools=[
         resolve_date_range,
         get_sales_summary,

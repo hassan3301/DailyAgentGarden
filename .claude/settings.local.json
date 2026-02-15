@@ -8,7 +8,12 @@
       "Bash(git reset:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(python deploy.py:*)",
+      "Bash(gcloud logging read:*)",
+      "Bash(gsutil cp:*)",
+      "Bash(python:*)",
+      "Bash(gcloud storage cp:*)"
     ]
   }
 }
