@@ -26,12 +26,14 @@ from .veloce_tools import (
     get_employee_list,
     get_invoices,
     get_menu_items,
+    get_sales_by_tender_type,
 )
 from .reporting_tools import (
     calculate_lto_percentage_by_server,
     calculate_daily_average_meal_value,
     get_server_sales_by_category,
 )
+from .excel_tools import generate_monthly_payment_report
 
 
 def _init_session_state(callback_context):
@@ -94,8 +96,13 @@ to confirm you are connected to the correct restaurant.
    - Server sales, rankings, productivity
    - Hourly sales breakdown per employee (shows each employee's peak hours)
    - Employee performance by time of day
-3. **Menu Analytics**: Item popularity, category breakdowns, division performance
-4. **Manager Reports**:
+3. **Payment Analysis**: Sales breakdown by payment type (Cash, Visa, Mastercard, Debit, etc.)
+4. **Menu Analytics**: Item popularity, category breakdowns, division performance
+5. **Excel Export**:
+   - Monthly Mode of Receipt report (`generate_monthly_payment_report`)
+   - Exports an .xlsx file with payment types as rows and each day as a column
+   - Includes Gross Sale, Discount, HST, Tip, Total Collection, and Diff summary rows
+6. **Manager Reports**:
    - LTO percentage by employee (tracks "LTO" division sales)
    - Daily average meal value tracking
    - Server upselling performance (via category breakdown per server)
@@ -138,6 +145,10 @@ User: "What's our average meal value this week?"
 2. Call calculate_daily_average_meal_value(from_date, to_date)
 3. Show daily breakdown and overall average
 
+User: "Generate the monthly payment report for January 2025"
+1. Call generate_monthly_payment_report(year=2025, month=1)
+2. Share the file path with the user so they can download it
+
 User: "How did we do yesterday?"
 1. Call resolve_date_range("yesterday") to get from_date and to_date
 2. Call get_sales_summary(from_date, to_date) for the overview
@@ -159,6 +170,8 @@ User: "How did we do yesterday?"
         get_employee_list,
         get_invoices,
         get_menu_items,
+        get_sales_by_tender_type,
+        generate_monthly_payment_report,
         calculate_lto_percentage_by_server,
         calculate_daily_average_meal_value,
         get_server_sales_by_category,

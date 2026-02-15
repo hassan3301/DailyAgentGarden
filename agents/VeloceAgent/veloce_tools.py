@@ -1498,3 +1498,104 @@ def get_employee_hourly_sales(
             "error": str(e),
             "message": f"Failed to get employee hourly sales: {str(e)}"
         }
+
+
+def get_sales_by_tender_type(
+    tool_context: ToolContext,
+    from_date: str,
+    to_date: str,
+) -> dict:
+    """
+    Get sales summary broken down by payment/tender type for a date range.
+    Shows totals for each payment method (Cash, Visa, Mastercard, Debit, etc.).
+
+    Args:
+        tool_context: ADK context with auth token and location ID
+        from_date: Start date in ISO format (YYYY-MM-DD)
+        to_date: End date in ISO format (YYYY-MM-DD)
+
+    Returns:
+        Dictionary containing payment type breakdown with amounts, counts, and tips.
+
+    Example:
+        get_sales_by_tender_type(context, "2025-06-10", "2025-06-10")
+        # Returns payment breakdown for that day
+    """
+    print(f"--- get_sales_by_tender_type: {from_date} to {to_date} ---")
+
+    location_id = get_location_id(tool_context)
+
+    from_datetime = f"{from_date}T00:00:00Z"
+    to_datetime = f"{to_date}T23:59:59Z"
+
+    try:
+        response = _api_get(tool_context, f"{VELOCE_API_BASE}/sales/tenderTypes", {
+            "locationIDs": [location_id],
+            "from": from_datetime,
+            "to": to_datetime,
+        })
+        response.raise_for_status()
+        data = response.json()
+
+        if not data:
+            return {
+                "status": "no_data",
+                "message": f"No payment data found for {from_date} to {to_date}",
+                "period": f"{from_date} to {to_date}",
+            }
+
+        tender_types = []
+        grand_total = 0
+        grand_count = 0
+        grand_tip = 0
+
+        for entry in data:
+            sales_amount = entry.get("salesAmount", 0)
+            count = entry.get("count", 0)
+            tip = entry.get("tip", 0)
+            tip_count = entry.get("tipCount", 0)
+            name = entry.get("nameMain") or entry.get("nameAlt") or "Unknown"
+
+            grand_total += sales_amount
+            grand_count += count
+            grand_tip += tip
+
+            tender_types.append({
+                "payment_type": name,
+                "sales_amount": format_currency(sales_amount),
+                "sales_amount_raw": sales_amount,
+                "transaction_count": count,
+                "tip_amount": format_currency(tip),
+                "tip_count": tip_count,
+            })
+
+        # Sort by sales amount descending
+        tender_types.sort(key=lambda x: x["sales_amount_raw"], reverse=True)
+
+        # Add percentage of total
+        for t in tender_types:
+            pct = (t["sales_amount_raw"] / grand_total * 100) if grand_total > 0 else 0
+            t["percentage_of_total"] = round(pct, 1)
+
+        return {
+            "status": "success",
+            "period": f"{from_date} to {to_date}",
+            "grand_total": format_currency(grand_total),
+            "grand_total_raw": grand_total,
+            "total_transactions": grand_count,
+            "total_tips": format_currency(grand_tip),
+            "tender_types": tender_types,
+        }
+
+    except requests.exceptions.HTTPError as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": f"Failed to fetch tender type data: {e.response.status_code}",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Unexpected error fetching tender type data",
+        }

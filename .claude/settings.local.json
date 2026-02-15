@@ -13,7 +13,9 @@
       "Bash(gcloud logging read:*)",
       "Bash(gsutil cp:*)",
       "Bash(python:*)",
-      "Bash(gcloud storage cp:*)"
+      "Bash(gcloud storage cp:*)",
+      "Bash(venvScriptspip install openpyxl)",
+      "Bash(pip install:*)"
     ]
   }
 }
