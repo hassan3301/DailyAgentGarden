@@ -6,14 +6,19 @@ Generates monthly payment/tender-type reports as .xlsx files.
 import os
 import calendar
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from google.adk.tools import ToolContext
+from google.cloud import storage
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, numbers
 
 from .config import VELOCE_API_BASE
 from .veloce_tools import get_location_id, _api_get
+
+GCS_BUCKET = os.getenv("GOOGLE_CLOUD_STAGING_BUCKET", "gs://daily-agent").replace("gs://", "")
+GCS_REPORTS_FOLDER = "reports"
+SIGNED_URL_EXPIRY_HOURS = 1
 
 
 # Fixed row labels in the order the report expects them.
@@ -310,7 +315,7 @@ def generate_monthly_payment_report(
         for c in range(1, total_col + 1):
             ws.cell(row=r, column=c).border = thin_border
 
-    # ---- Save file ---------------------------------------------------------------
+    # ---- Save locally then upload to GCS ----------------------------------------
     out_dir = os.path.join(tempfile.gettempdir(), "veloce_reports")
     os.makedirs(out_dir, exist_ok=True)
     safe_name = location_name.replace(" ", "_").replace("&", "and")
@@ -318,12 +323,40 @@ def generate_monthly_payment_report(
     filename = f"Mode_of_Receipt_{safe_name}_{year}_{month:02d}_{timestamp}.xlsx"
     filepath = os.path.join(out_dir, filename)
     wb.save(filepath)
+    print(f"Report saved locally to {filepath}")
 
-    print(f"Report saved to {filepath}")
-    return {
-        "status": "success",
-        "file_path": filepath,
-        "message": f"Monthly payment report for {month_name} {year} saved to {filepath}",
-        "days_covered": num_days,
-        "location": location_name,
-    }
+    # Upload to GCS and generate signed download URL
+    try:
+        gcs_client = storage.Client()
+        bucket = gcs_client.bucket(GCS_BUCKET)
+        blob_path = f"{GCS_REPORTS_FOLDER}/{filename}"
+        blob = bucket.blob(blob_path)
+        blob.upload_from_filename(filepath, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        print(f"Uploaded to gs://{GCS_BUCKET}/{blob_path}")
+
+        download_url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(hours=SIGNED_URL_EXPIRY_HOURS),
+            method="GET",
+            response_disposition=f'attachment; filename="{filename}"',
+        )
+        print(f"Signed URL generated (expires in {SIGNED_URL_EXPIRY_HOURS}h)")
+
+        return {
+            "status": "success",
+            "download_url": download_url,
+            "file_path": filepath,
+            "gcs_path": f"gs://{GCS_BUCKET}/{blob_path}",
+            "message": f"Monthly payment report for {month_name} {year} is ready. Download link (expires in {SIGNED_URL_EXPIRY_HOURS} hour): {download_url}",
+            "days_covered": num_days,
+            "location": location_name,
+        }
+    except Exception as e:
+        print(f"WARNING: GCS upload failed ({e}), returning local path only")
+        return {
+            "status": "success",
+            "file_path": filepath,
+            "message": f"Monthly payment report for {month_name} {year} saved to {filepath} (cloud upload failed: {e})",
+            "days_covered": num_days,
+            "location": location_name,
+        }

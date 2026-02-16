@@ -15,7 +15,9 @@
       "Bash(python:*)",
       "Bash(gcloud storage cp:*)",
       "Bash(venvScriptspip install openpyxl)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(gcloud projects describe:*)",
+      "Bash(gcloud projects add-iam-policy-binding:*)"
     ]
   }
 }

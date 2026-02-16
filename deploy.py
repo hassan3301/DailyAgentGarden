@@ -15,7 +15,7 @@ import os
 import sys
 
 import vertexai
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from vertexai import agent_engines
 from vertexai.preview.reasoning_engines import AdkApp
 
@@ -31,9 +31,19 @@ BASE_REQUIREMENTS = [
 
 # Per-agent extra pip requirements (add entries as you create new agents)
 AGENT_REQUIREMENTS = {
-    "VeloceAgent": ["requests"],
+    "VeloceAgent": ["requests", "openpyxl", "google-cloud-storage"],
     "baseLawAgent": ["llama-index"],
 }
+
+# Env vars to forward to the deployed agent (beyond GCP project/location which
+# Vertex AI sets automatically).  Add keys here as new agents need them.
+DEPLOY_ENV_VARS = [
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "VERTEX_AI_MODEL",
+    "KNOWLEDGE_RAG_CORPUS",
+    "DRAFTING_RAG_CORPUS",
+    "RESEARCH_RAG_CORPUS",
+]
 
 
 def discover_agents():
@@ -85,8 +95,12 @@ def cmd_create(args):
     root_agent = load_agent(agent_name)
     requirements = get_requirements(agent_name)
 
+    # Collect env vars to forward to the deployed agent
+    env_vars = {k: os.environ[k] for k in DEPLOY_ENV_VARS if k in os.environ}
+
     print(f"Deploying '{agent_name}' to Vertex AI Agent Engine...")
     print(f"  Requirements: {requirements}")
+    print(f"  Env vars: {list(env_vars.keys())}")
 
     adk_app = AdkApp(agent=root_agent, enable_tracing=True)
 
@@ -101,6 +115,7 @@ def cmd_create(args):
             agent_engine=adk_app,
             requirements=requirements,
             extra_packages=[f"./{agent_name}"],
+            env_vars=env_vars,
         )
     finally:
         os.chdir(original_cwd)
