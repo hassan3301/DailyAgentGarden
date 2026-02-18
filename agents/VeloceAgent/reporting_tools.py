@@ -5,8 +5,6 @@ These tools calculate weekly/daily KPIs that managers need to report
 
 import traceback
 from google.adk.tools import ToolContext
-from typing import Optional
-
 from .veloce_tools import (
     get_cached_employee_detail_data,
     get_location_id,
@@ -15,32 +13,25 @@ from .veloce_tools import (
     VELOCE_API_BASE,
 )
 
-
-def calculate_lto_percentage_by_server(
+def get_server_sales_by_item(
     tool_context: ToolContext,
     from_date: str,
     to_date: str,
-    lto_category_name: Optional[str] = "LTO"
 ) -> dict:
     """
-    Calculate what percentage of each server's sales came from LTO items.
-    Checks both bigDivision (category) and division (sub-category) for LTO.
+    Get detailed per-server sales broken down by individual item.
+    Returns every item each server sold with item name, category, division,
+    quantity, and sales amount.  Useful for LTO tracking, item-level analysis,
+    and any report where the agent needs to inspect individual menu items.
     """
-    print(f"\n{'='*60}")
-    print(f"LTO PERCENTAGE CALCULATION")
-    print(f"{'='*60}")
-    print(f"Date range: {from_date} to {to_date}")
-    print(f"Looking for LTO in: '{lto_category_name}'")
+    print(f"--- get_server_sales_by_item: {from_date} to {to_date} ---")
 
     try:
-        # Use shared data layer (cached if already fetched by another report)
         data = get_cached_employee_detail_data(tool_context, from_date, to_date)
         employee_totals = data["employee_totals"]
         employee_map = data["employee_map"]
         detail_data = data["detail_data"]
         active_employee_ids = data["active_employee_ids"]
-
-        print(f"Found {len(active_employee_ids)} employees who worked")
 
         if len(active_employee_ids) == 0:
             return {
@@ -48,95 +39,72 @@ def calculate_lto_percentage_by_server(
                 "message": f"No employee sales found for {from_date} to {to_date}"
             }
 
-        print(f"Received {len(detail_data)} total sales records")
+        # Aggregate per employee → per item
+        # Key: (emp_id, item_name, category, division)
+        emp_items = {}
 
-        # Initialize tracking
-        employee_lto_sales = {emp_id: 0 for emp_id in active_employee_ids}
-        employee_lto_qty = {emp_id: 0 for emp_id in active_employee_ids}
-        big_divisions_seen = set()
-        divisions_seen = set()
-        lto_records_found = 0
-
-        # Process ALL sales records
         for sale in detail_data:
             emp_id = sale.get("employeeId")
             if not emp_id or emp_id not in active_employee_ids:
                 continue
 
-            big_division_name = sale.get("bigDivision", {}).get("name", "")
-            division_name = sale.get("division", {}).get("name", "")
+            item_name = sale.get("item", {}).get("name", "Unknown")
+            category = sale.get("bigDivision", {}).get("name", "OTHER")
+            division = sale.get("division", {}).get("name", "")
+            quantity = sale.get("quantity", 0)
+            sales_amount = sale.get("salesAmount", 0)
 
-            big_divisions_seen.add(big_division_name)
-            divisions_seen.add(division_name)
+            key = (emp_id, item_name, category, division)
+            if key not in emp_items:
+                emp_items[key] = {"quantity": 0, "sales_amount": 0}
+            emp_items[key]["quantity"] += quantity
+            emp_items[key]["sales_amount"] += sales_amount
 
-            # Check if this is LTO - check BOTH bigDivision and division
-            is_lto = (
-                big_division_name.upper() == lto_category_name.upper() or
-                division_name.upper() == lto_category_name.upper()
-            )
-
-            if is_lto:
-                sales_amount = sale.get("salesAmount", 0)
-                quantity = sale.get("quantity", 0)
-                employee_lto_sales[emp_id] += sales_amount
-                employee_lto_qty[emp_id] += quantity
-                lto_records_found += 1
-
-        print(f"LTO records found: {lto_records_found}")
-
-        # Calculate percentages
+        # Build per-employee results
         results = []
         for emp_id in active_employee_ids:
-            total = employee_totals[emp_id]["sales_amount"]
-            lto_sales = employee_lto_sales[emp_id]
-            lto_qty = employee_lto_qty[emp_id]
-            lto_percentage = (lto_sales / total * 100) if total > 0 else 0
+            totals = employee_totals[emp_id]
+            total_sales = totals["sales_amount"]
+            emp_name = employee_map.get(emp_id, "Unknown")
+
+            items = []
+            for (eid, item_name, category, division), agg in sorted(
+                emp_items.items(), key=lambda x: x[1]["sales_amount"], reverse=True
+            ):
+                if eid != emp_id:
+                    continue
+                items.append({
+                    "item_name": item_name,
+                    "category": category,
+                    "division": division,
+                    "quantity": agg["quantity"],
+                    "sales_amount": format_currency(agg["sales_amount"]),
+                    "sales_amount_raw": round(agg["sales_amount"], 2),
+                })
 
             results.append({
-                "employee_name": employee_map.get(emp_id, f"Employee {emp_id[:8]}"),
+                "employee_name": emp_name,
                 "employee_id": emp_id,
-                "total_sales": format_currency(total),
-                "total_sales_raw": total,
-                "lto_sales": format_currency(lto_sales),
-                "lto_sales_raw": lto_sales,
-                "lto_quantity": lto_qty,
-                "lto_percentage": round(lto_percentage, 2)
+                "total_sales": format_currency(total_sales),
+                "total_sales_raw": round(total_sales, 2),
+                "items": items,
             })
 
-        results.sort(key=lambda x: x["lto_percentage"], reverse=True)
-
-        total_all_sales = sum(t["sales_amount"] for t in employee_totals.values())
-        total_lto_sales = sum(employee_lto_sales.values())
-        total_lto_qty = sum(employee_lto_qty.values())
-
-        print(f"\nFinal Summary:")
-        print(f"  Total Sales: ${total_all_sales:.2f}")
-        print(f"  Total LTO Sales: ${total_lto_sales:.2f}")
-        print(f"  Overall LTO %: {(total_lto_sales/total_all_sales*100 if total_all_sales > 0 else 0):.2f}%")
-        print(f"{'='*60}\n")
+        results.sort(key=lambda x: x["total_sales_raw"], reverse=True)
 
         return {
             "status": "success",
             "period": f"{from_date} to {to_date}",
             "employee_count": len(results),
-            "lto_category_tracked": lto_category_name,
-            "big_divisions_found": sorted(big_divisions_seen),
-            "divisions_found": sorted(divisions_seen),
             "employees": results,
-            "summary": {
-                "total_sales_all_employees": format_currency(total_all_sales),
-                "total_lto_sales": format_currency(total_lto_sales),
-                "total_lto_quantity": total_lto_qty,
-                "overall_lto_percentage": round(total_lto_sales / total_all_sales * 100, 2) if total_all_sales > 0 else 0
-            }
         }
 
     except Exception as e:
-        print(f"\nERROR: {traceback.format_exc()}")
+        print(f"Error: {traceback.format_exc()}")
         return {
             "status": "error",
             "error": str(e),
-            "message": f"Failed to calculate LTO percentages: {str(e)}"
+            "message": f"Failed to get server sales by item: {str(e)}"
         }
 
 

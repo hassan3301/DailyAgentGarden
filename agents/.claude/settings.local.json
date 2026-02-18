@@ -5,7 +5,8 @@
       "Bash(python:*)",
       "Bash(findstr:*)",
       "Bash(where:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(gcloud alpha services quota list:*)"
     ]
   }
 }

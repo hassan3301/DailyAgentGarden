@@ -8,6 +8,7 @@ from google.adk.tools import ToolContext
 from typing import Optional, List
 import requests
 from datetime import datetime, timedelta
+from dateutil import parser as dateutil_parser
 import time
 
 from .config import VELOCE_API_BASE
@@ -66,10 +67,16 @@ def resolve_date_range(tool_context: ToolContext, period: str) -> dict:
         to_date = last_month_end.strftime("%Y-%m-%d")
         description = f"Last month ({from_date} to {to_date})"
     else:
-        return {
-            "status": "error",
-            "message": f"Unrecognized period: '{period}'. Use: today, yesterday, this week, last week, this month, last month, or 'YYYY-MM-DD to YYYY-MM-DD'."
-        }
+        # Try parsing as a natural-language date (e.g. "January 9th 2026", "Jan 9 2026")
+        try:
+            parsed = dateutil_parser.parse(period, fuzzy=True)
+            from_date = to_date = parsed.strftime("%Y-%m-%d")
+            description = parsed.strftime("%A, %B %d, %Y")
+        except (ValueError, OverflowError):
+            return {
+                "status": "error",
+                "message": f"Unrecognized period: '{period}'. Use: today, yesterday, this week, last week, this month, last month, or 'YYYY-MM-DD to YYYY-MM-DD'."
+            }
 
     result = {
         "status": "success",
@@ -776,7 +783,7 @@ def get_sales_by_category(
 ) -> dict:
     """
     Get sales broken down by major categories (BigDivisions).
-    Categories include: BREAKFAST, LUNCH, LTO, ESPRESSO AND BREWED, SIDES AND EXTRAS, etc.
+    Categories include: BREAKFAST, LUNCH, BEVERAGES, ESPRESSO AND BREWED, SIDES AND EXTRAS, etc.
     
     Args:
         from_date: Start date in YYYY-MM-DD format
