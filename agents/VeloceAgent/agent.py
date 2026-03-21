@@ -30,8 +30,11 @@ from .veloce_tools import (
 )
 from .reporting_tools import (
     get_server_sales_by_item,
+    get_lto_report,
     calculate_daily_average_meal_value,
     get_server_sales_by_category,
+    get_upsell_report,
+    get_weekly_sales_report,
 )
 from .excel_tools import generate_monthly_payment_report
 
@@ -61,7 +64,8 @@ def _init_session_state(callback_context):
         "location_name": "VELOCE_LOCATION_NAME",
     }
 
-    missing = [env for key, env in env_map.items() if not os.getenv(env) and key != "location_name"]
+    required = ["veloce_email", "veloce_password"]
+    missing = [env_map[key] for key in required if not os.getenv(env_map[key])]
     if missing:
         print(f"WARNING: Missing env vars: {', '.join(missing)}")
         return
@@ -88,7 +92,7 @@ to confirm you are connected to the correct restaurant.
 **Your Capabilities:**
 1. **Sales Analysis**:
    - Daily, weekly, monthly sales trends
-   - Sales by category (FOOD, LUNCH, BEVERAGES, DRINKS, SIDES, ESPRESSO AND BREWED, etc.)
+   - Sales by category (FOOD, BEVERAGES)
    - Sales by division (sub-categories within each category)
    - Sales by service mode (LUNCH, MORNING, EARLY BIRD)
    - Hourly sales patterns and peak hours
@@ -104,9 +108,9 @@ to confirm you are connected to the correct restaurant.
    - Exports an .xlsx file with payment types as rows and each day as a column
    - Includes Gross Sale, Discount, HST, Tip, Total Collection, and Diff summary rows
 6. **Manager Reports**:
-   - LTO performance by employee (via item-level sales breakdown)
-   - Daily average meal value tracking
-   - Server upselling performance (via category breakdown per server)
+   - LTO performance by employee
+   - Weekly sales report with daily net sales, meal counts, and average meal values
+   - Server upselling performance
    - Category sales breakdown
    - Peak hours analysis for staffing optimization
    - Day-by-day performance comparison
@@ -117,6 +121,11 @@ When the user mentions relative dates ("yesterday", "this week", "last month", e
 ALWAYS call `resolve_date_range` FIRST to get the exact from_date and to_date.
 Then pass those dates to the data tools. Never try to calculate dates yourself.
 
+**CRITICAL: Pre-formatted Tables**
+When a tool returns a `markdown_table` field, present it DIRECTLY to the user.
+Do NOT recalculate, rearrange, or re-derive any numbers. Copy the table as-is.
+Also include the `team_summary` or `summary` field when present.
+
 **Output Formatting:**
 - Use markdown tables for comparisons and rankings
 - Always include the date range in report headers
@@ -126,34 +135,35 @@ Then pass those dates to the data tools. Never try to calculate dates yourself.
 - Flag unusual patterns or anomalies (e.g. a server with 0 LTO items sold)
 
 **Reporting Tools:**
-- `get_server_sales_by_item`: Per-server sales broken down by individual menu item (name, category, division, quantity, sales $). Use this for LTO reports and any item-level analysis.
-- `calculate_daily_average_meal_value`: Track average check size per day
-- `get_server_sales_by_category`: Per-server sales broken down by POS category (bigDivision)
+- `get_server_sales_by_item`: Per-server sales broken down by individual menu item (name, category, division, quantity, sales $). Use this for general item-level analysis.
+- `get_lto_report`: Pre-calculated LTO report per server with a ready-to-display `markdown_table`. Returns lto_sales, lto_quantity, lto_percent per server. **Always use this for LTO reports.**
+- `get_upsell_report`: Pre-calculated upsell report per server with a ready-to-display `markdown_table`. Computes BEVERAGES + FOOD UPGRADES + SIDES totals per server. **Always use this for upsell reports.**
+- `get_weekly_sales_report`: Pre-formatted weekly sales report with a `markdown_table` showing Date, Day, Net Sales, Meal Count, and Avg Meal Value. **Always use this for weekly sales reports** instead of calling `get_daily_stats` + `calculate_daily_average_meal_value` separately.
+- `calculate_daily_average_meal_value`: Track average check size per day (use `get_weekly_sales_report` instead when generating a full weekly report)
+- `get_server_sales_by_category`: Per-server sales broken down by POS category and division. Use for detailed category analysis beyond upsells.
 
 **LTO Tracking:**
 Current LTO items are: **WHITE MOCHA ICED LATTE** and **WHITE MOCHA LATTE** (under BEVERAGES / COFFEE BAR).
-When asked about LTO performance, use `get_server_sales_by_item` to pull item-level data, then identify ALL LTO items from the results. The item names in the data may not match exactly — use your judgement to find the closest matches. Combine sales from ALL LTO items together for each server, then calculate each server's total LTO sales $, total LTO quantity, and LTO % of their total sales.
+When asked about LTO performance, **always use `get_lto_report`** — it pre-filters, calculates all metrics, and returns a `markdown_table`. Present the table directly.
 
-**Upsell Calculations:**
-When asked about upselling, use `get_server_sales_by_item` to get each server's item-level data with category and division.
-Upsells are specifically:
-1. ALL items under the **BEVERAGES** category (bigDivision)
-2. Items under the **FOOD UPGRADES** division (within FOOD category)
-3. Items under the **SIDES** division (within FOOD category)
-Sum the sales from these three groups for each server to get their total upsell $.
-Calculate upsell % per server as: total upsell $ / total sales $ * 100.
+**Upsell Tracking:**
+When asked about upselling, **always use `get_upsell_report`** — it pre-calculates BEVERAGES + FOOD UPGRADES + SIDES per server and returns a `markdown_table`. Present the table directly. Do NOT use `get_server_sales_by_category` for upsell reports.
 
 **Example Workflows:**
+User: "Generate the weekly sales report"
+1. Call resolve_date_range("this week") to get from_date and to_date
+2. Call get_weekly_sales_report(from_date, to_date)
+3. Present the markdown_table and summary directly
+
 User: "Generate the weekly LTO report"
 1. Call resolve_date_range("this week") to get from_date and to_date
-2. Call get_server_sales_by_item(from_date, to_date)
-3. From each server's items list, find the LTO items (WHITE MOCHA ICED LATTE, WHITE MOCHA LATTE)
-4. Calculate LTO $ and % per server and present in a table
+2. Call get_lto_report(from_date, to_date)
+3. Present the markdown_table and team_summary directly
 
-User: "What's our average meal value this week?"
+User: "Generate the upsell report for this week"
 1. Call resolve_date_range("this week") to get from_date and to_date
-2. Call calculate_daily_average_meal_value(from_date, to_date)
-3. Show daily breakdown and overall average
+2. Call get_upsell_report(from_date, to_date)
+3. Present the markdown_table and team_summary directly
 
 User: "Generate the monthly payment report for January 2025"
 1. Call generate_monthly_payment_report(year=2025, month=1)
@@ -183,7 +193,10 @@ User: "How did we do yesterday?"
         get_sales_by_tender_type,
         generate_monthly_payment_report,
         get_server_sales_by_item,
+        get_lto_report,
         calculate_daily_average_meal_value,
         get_server_sales_by_category,
+        get_upsell_report,
+        get_weekly_sales_report,
     ]
 )

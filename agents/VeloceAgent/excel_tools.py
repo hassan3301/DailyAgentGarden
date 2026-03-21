@@ -6,8 +6,11 @@ Generates monthly payment/tender-type reports as .xlsx files.
 import os
 import calendar
 import tempfile
+import traceback
 from datetime import datetime, timedelta
 
+import google.auth
+from google.auth.transport import requests as auth_requests
 from google.adk.tools import ToolContext
 from google.cloud import storage
 from openpyxl import Workbook
@@ -16,7 +19,7 @@ from openpyxl.styles import Font, Alignment, Border, Side, numbers
 from .config import VELOCE_API_BASE
 from .veloce_tools import get_location_id, _api_get
 
-GCS_BUCKET = os.getenv("GOOGLE_CLOUD_STAGING_BUCKET", "gs://daily-agent").replace("gs://", "")
+GCS_BUCKET = os.getenv("GOOGLE_CLOUD_STAGING_BUCKET", "gs://daily-agent-bucket").replace("gs://", "")
 GCS_REPORTS_FOLDER = "reports"
 SIGNED_URL_EXPIRY_HOURS = 1
 
@@ -61,6 +64,8 @@ _NAME_MAP: dict[str, str] = {
     "U-EAT":                "UEAT",
     "DEBIT/CREDIT MANUAL":  "DEBIT/CREDIT MANUAL",
     "MANUAL":               "DEBIT/CREDIT MANUAL",
+    "MANUAL CREDIT":        "DEBIT/CREDIT MANUAL",
+    "MANUAL DEBIT":         "DEBIT/CREDIT MANUAL",
     "INTERAC":              "INTERAC",
     "VISA":                 "VISA",
     "MASTERCARD":           "MASTERCARD",
@@ -327,19 +332,31 @@ def generate_monthly_payment_report(
 
     # Upload to GCS and generate signed download URL
     try:
-        gcs_client = storage.Client()
+        credentials, project = google.auth.default()
+        credentials.refresh(auth_requests.Request())
+
+        gcs_client = storage.Client(credentials=credentials, project=project)
         bucket = gcs_client.bucket(GCS_BUCKET)
         blob_path = f"{GCS_REPORTS_FOLDER}/{filename}"
         blob = bucket.blob(blob_path)
         blob.upload_from_filename(filepath, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         print(f"Uploaded to gs://{GCS_BUCKET}/{blob_path}")
 
-        download_url = blob.generate_signed_url(
+        sign_kwargs = dict(
             version="v4",
             expiration=timedelta(hours=SIGNED_URL_EXPIRY_HOURS),
             method="GET",
             response_disposition=f'attachment; filename="{filename}"',
         )
+        # Determine the service account email for IAM-based URL signing.
+        # On Vertex AI / Cloud Run it comes from the attached SA credentials.
+        # Locally with ADC (user credentials) it must be provided via env var
+        # so the IAM signBlob API can be called on behalf of that SA.
+        sa_email = getattr(credentials, "service_account_email", None) or os.getenv("GCS_SIGNING_SERVICE_ACCOUNT")
+        if sa_email:
+            sign_kwargs["service_account_email"] = sa_email
+            sign_kwargs["access_token"] = credentials.token
+        download_url = blob.generate_signed_url(**sign_kwargs)
         print(f"Signed URL generated (expires in {SIGNED_URL_EXPIRY_HOURS}h)")
 
         return {
@@ -352,7 +369,8 @@ def generate_monthly_payment_report(
             "location": location_name,
         }
     except Exception as e:
-        print(f"WARNING: GCS upload failed ({e}), returning local path only")
+        print(f"WARNING: GCS upload failed: {e}")
+        traceback.print_exc()
         return {
             "status": "success",
             "file_path": filepath,

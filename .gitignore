@@ -11,3 +11,5 @@ venv/
 .DS_Store
 .ruff_cache/
 *.log
+*.db
+nul

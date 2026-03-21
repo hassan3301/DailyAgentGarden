@@ -137,7 +137,25 @@ def get_auth_token(tool_context: ToolContext) -> str:
         tool_context.state["veloce_token_time"] = time.time()
         tool_context.state["user:veloce_user_id"] = auth_data.get("user_id")
         tool_context.state["user:manager_name"] = f"{auth_data.get('first_name', '')} {auth_data.get('last_name', '')}".strip()
-        
+
+        # Auto-fetch location if not already set
+        if not tool_context.state.get("location_id"):
+            try:
+                from .auth import get_user_locations
+            except ImportError:
+                from VeloceAgent.auth import get_user_locations
+            locations = get_user_locations(token)
+            active = [loc for loc in locations if loc.get("is_active")]
+            if active:
+                tool_context.state["location_id"] = active[0]["id"]
+                tool_context.state["location_name"] = active[0].get("name", "")
+                print(f"📍 Auto-selected location: {active[0].get('name')} ({active[0]['id']})")
+            elif locations:
+                tool_context.state["location_id"] = locations[0]["id"]
+                tool_context.state["location_name"] = locations[0].get("name", "")
+                print(f"📍 Auto-selected location: {locations[0].get('name')} ({locations[0]['id']})")
+
+        location_name = tool_context.state.get("location_name")
         print(f"✅ Authenticated for {location_name}")
         print(f"✅ Logged in as {tool_context.state.get('user:manager_name', 'user')}")
         
@@ -783,7 +801,7 @@ def get_sales_by_category(
 ) -> dict:
     """
     Get sales broken down by major categories (BigDivisions).
-    Categories include: BREAKFAST, LUNCH, BEVERAGES, ESPRESSO AND BREWED, SIDES AND EXTRAS, etc.
+    Categories include: BEVERAGES, FOOD, etc.
     
     Args:
         from_date: Start date in YYYY-MM-DD format
