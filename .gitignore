@@ -13,3 +13,5 @@ venv/
 *.log
 *.db
 nul
+reports/
+references/

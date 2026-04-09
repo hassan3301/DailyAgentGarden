@@ -17,7 +17,9 @@
       "Bash(venvScriptspip install openpyxl)",
       "Bash(pip install:*)",
       "Bash(gcloud projects describe:*)",
-      "Bash(gcloud projects add-iam-policy-binding:*)"
+      "Bash(gcloud projects add-iam-policy-binding:*)",
+      "Bash(git rm:*)",
+      "Bash(git -C \"C:\\\\Users\\\\hnish\\\\OneDrive\\\\Desktop\\\\DailyAgentGarden\" log --oneline -15)"
     ]
   }
 }

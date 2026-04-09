@@ -13,6 +13,7 @@ import google.auth
 from google.auth.transport import requests as auth_requests
 from google.adk.tools import ToolContext
 from google.cloud import storage
+from google.genai import types
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, numbers
 
@@ -174,7 +175,7 @@ def _fetch_day_tender_data(tool_context: ToolContext, location_id: str, date_str
     }
 
 
-def generate_monthly_payment_report(
+async def generate_monthly_payment_report(
     tool_context: ToolContext,
     year: int,
     month: int,
@@ -217,6 +218,12 @@ def generate_monthly_payment_report(
     bold = Font(bold=True)
     currency_fmt = '#,##0.00'
     header_fill_font = Font(bold=True, size=11)
+    from openpyxl.styles import PatternFill
+    green_fill = PatternFill(start_color="92D050", end_color="92D050", fill_type="solid")
+    GREEN_ROWS = {
+        "CASH", "DEBIT/CREDIT", "GIFT CARD", "UBER", "SKIP",
+        "DOORDASH", "UEAT", "AMEX", "LOAD GIFT CARD", "PAYMENT TRANSFER",
+    }
     thin_border = Border(
         bottom=Side(style="thin"),
         top=Side(style="thin"),
@@ -250,12 +257,18 @@ def generate_monthly_payment_report(
     first_data_row = header_row + 1
     for i, label in enumerate(PAYMENT_TYPE_ROWS):
         row = first_data_row + i
-        ws.cell(row=row, column=1, value=label).font = bold
+        is_green = label in GREEN_ROWS
+        label_cell = ws.cell(row=row, column=1, value=label)
+        label_cell.font = bold
+        if is_green:
+            label_cell.fill = green_fill
         for day_idx, dd in enumerate(daily_data):
             col = day_idx + 2
             val = dd["tenders"].get(label, 0)
             cell = ws.cell(row=row, column=col, value=val)
             cell.number_format = currency_fmt
+            if is_green:
+                cell.fill = green_fill
         # TOTAL column (SUM formula)
         from openpyxl.utils import get_column_letter
         first_col_letter = get_column_letter(2)
@@ -264,6 +277,8 @@ def generate_monthly_payment_report(
         total_cell.value = f"=SUM({first_col_letter}{row}:{last_col_letter}{row})"
         total_cell.number_format = currency_fmt
         total_cell.font = bold
+        if is_green:
+            total_cell.fill = green_fill
 
     # --- Separator row ---
     sep_row = first_data_row + len(PAYMENT_TYPE_ROWS)
@@ -323,58 +338,80 @@ def generate_monthly_payment_report(
     # ---- Save locally then upload to GCS ----------------------------------------
     out_dir = os.path.join(tempfile.gettempdir(), "veloce_reports")
     os.makedirs(out_dir, exist_ok=True)
-    safe_name = location_name.replace(" ", "_").replace("&", "and")
+    safe_name = location_name.replace(" ", "_").replace("&", "and").replace("#", "")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"Mode_of_Receipt_{safe_name}_{year}_{month:02d}_{timestamp}.xlsx"
     filepath = os.path.join(out_dir, filename)
     wb.save(filepath)
     print(f"Report saved locally to {filepath}")
 
-    # Upload to GCS and generate signed download URL
+    # Save as ADK artifact so the file is accessible through the agent response
+    artifact_saved = False
     try:
-        credentials, project = google.auth.default()
-        credentials.refresh(auth_requests.Request())
-
-        gcs_client = storage.Client(credentials=credentials, project=project)
-        bucket = gcs_client.bucket(GCS_BUCKET)
-        blob_path = f"{GCS_REPORTS_FOLDER}/{filename}"
-        blob = bucket.blob(blob_path)
-        blob.upload_from_filename(filepath, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        print(f"Uploaded to gs://{GCS_BUCKET}/{blob_path}")
-
-        sign_kwargs = dict(
-            version="v4",
-            expiration=timedelta(hours=SIGNED_URL_EXPIRY_HOURS),
-            method="GET",
-            response_disposition=f'attachment; filename="{filename}"',
+        with open(filepath, "rb") as f:
+            file_bytes = f.read()
+        artifact = types.Part(
+            inline_data=types.Blob(
+                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                data=file_bytes,
+            )
         )
-        # Determine the service account email for IAM-based URL signing.
-        # On Vertex AI / Cloud Run it comes from the attached SA credentials.
-        # Locally with ADC (user credentials) it must be provided via env var
-        # so the IAM signBlob API can be called on behalf of that SA.
-        sa_email = getattr(credentials, "service_account_email", None) or os.getenv("GCS_SIGNING_SERVICE_ACCOUNT")
-        if sa_email:
-            sign_kwargs["service_account_email"] = sa_email
-            sign_kwargs["access_token"] = credentials.token
-        download_url = blob.generate_signed_url(**sign_kwargs)
-        print(f"Signed URL generated (expires in {SIGNED_URL_EXPIRY_HOURS}h)")
-
-        return {
-            "status": "success",
-            "download_url": download_url,
-            "file_path": filepath,
-            "gcs_path": f"gs://{GCS_BUCKET}/{blob_path}",
-            "message": f"Monthly payment report for {month_name} {year} is ready. Download link (expires in {SIGNED_URL_EXPIRY_HOURS} hour): {download_url}",
-            "days_covered": num_days,
-            "location": location_name,
-        }
+        await tool_context.save_artifact(filename=filename, artifact=artifact)
+        artifact_saved = True
+        print(f"Artifact saved: {filename}")
     except Exception as e:
-        print(f"WARNING: GCS upload failed: {e}")
+        print(f"WARNING: artifact save failed: {e}")
         traceback.print_exc()
-        return {
-            "status": "success",
-            "file_path": filepath,
-            "message": f"Monthly payment report for {month_name} {year} saved to {filepath} (cloud upload failed: {e})",
-            "days_covered": num_days,
-            "location": location_name,
-        }
+
+    # Optionally upload to GCS as backup (if bucket is configured)
+    download_url = None
+    gcs_path = None
+    if os.getenv("GOOGLE_CLOUD_STAGING_BUCKET"):
+        try:
+            credentials, project = google.auth.default()
+            credentials.refresh(auth_requests.Request())
+
+            gcs_client = storage.Client(credentials=credentials, project=project)
+            bucket = gcs_client.bucket(GCS_BUCKET)
+            blob_path = f"{GCS_REPORTS_FOLDER}/{filename}"
+            blob = bucket.blob(blob_path)
+            blob.upload_from_filename(filepath, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            gcs_path = f"gs://{GCS_BUCKET}/{blob_path}"
+            print(f"Uploaded to {gcs_path}")
+
+            sign_kwargs = dict(
+                version="v4",
+                expiration=timedelta(hours=SIGNED_URL_EXPIRY_HOURS),
+                method="GET",
+                response_disposition=f'attachment; filename="{filename}"',
+            )
+            sa_email = getattr(credentials, "service_account_email", None) or os.getenv("GCS_SIGNING_SERVICE_ACCOUNT")
+            if sa_email:
+                sign_kwargs["service_account_email"] = sa_email
+                sign_kwargs["access_token"] = credentials.token
+            download_url = blob.generate_signed_url(**sign_kwargs)
+            print(f"Signed URL generated (expires in {SIGNED_URL_EXPIRY_HOURS}h)")
+        except Exception as e:
+            print(f"WARNING: GCS upload/signing failed: {e}")
+            traceback.print_exc()
+
+    # Build response
+    result = {
+        "status": "success",
+        "file_name": filename,
+        "file_path": filepath,
+        "artifact_saved": artifact_saved,
+        "days_covered": num_days,
+        "location": location_name,
+    }
+
+    if download_url:
+        result["download_url"] = download_url
+        result["gcs_path"] = gcs_path
+        result["message"] = f"Monthly payment report for {month_name} {year} is ready. Download link (expires in {SIGNED_URL_EXPIRY_HOURS} hour): {download_url}"
+    elif artifact_saved:
+        result["message"] = f"Monthly payment report for {month_name} {year} is ready. The file '{filename}' has been saved and is available for download."
+    else:
+        result["message"] = f"Monthly payment report for {month_name} {year} was generated but could not be saved for download. Local path: {filepath}"
+
+    return result
